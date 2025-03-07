@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.23)
 
 project(SVF
-  VERSION 3.1
-  DESCRIPTION "SVF is a static value-flow analysis tool for LLVM-based languages"
-  HOMEPAGE_URL "https://github.com/SVF-tools/SVF"
-  LANGUAGES C CXX
+        VERSION 3.1
+        DESCRIPTION "SVF is a static value-flow analysis tool for LLVM-based languages"
+        HOMEPAGE_URL "https://github.com/SVF-tools/SVF"
+        LANGUAGES C CXX
 )
+
+find_package (glog 0.7.1 REQUIRED)
 
 # Ensure installation directories like ${CMAKE_INSTALL_LIBDIR} are available
 include(GNUInstallDirs)
@@ -56,8 +58,8 @@ include_directories(${SVF_BINARY_DIR}/include)
 
 # Install generated configuration header (see `configure_file()`) to top-level include dir of SVF
 install(
-  FILES ${SVF_BINARY_DIR}/include/Util/config.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/Util
+        FILES ${SVF_BINARY_DIR}/include/Util/config.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/Util
 )
 
 # Build SVF with C++ standard C++17
@@ -69,9 +71,9 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 
 # By default, build SVF and its targets treating all compiler warnings as errors (except deprecations)
 add_compile_options(
-  "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wall>"
-  "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Werror>"
-  "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wno-deprecated-declarations>"
+        "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wall>"
+        "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Werror>"
+        "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wno-deprecated-declarations>"
 )
 
 # Keep assertions enabled if requested
@@ -82,12 +84,12 @@ add_compile_options("$<$<BOOL:${SVF_EXPORT_DYNAMIC}>:-rdynamic>")
 
 # Configure whether a coverage build should be created for SVF (i.e. add runtime instrumentation)
 add_compile_options(
-  "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-fprofile-arcs>"
-  "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-ftest-coverage>"
+        "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-fprofile-arcs>"
+        "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-ftest-coverage>"
 )
 add_link_options(
-  "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-fprofile-arcs>"
-  "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-ftest-coverage>"
+        "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-fprofile-arcs>"
+        "$<$<OR:$<BOOL:${SVF_COVERAGE}>,$<BOOL:$ENV{SVF_COVERAGE}>>:-ftest-coverage>"
 )
 
 # If building with sanitiser, load the given sanitiser mode
@@ -113,17 +115,17 @@ endif()
 
 # Find Z3 and its include directory from the top-level include file
 find_library(
-  Z3_LIBRARIES
-  REQUIRED
-  NAMES z3
-  HINTS ${Z3_DIR} ENV Z3_DIR
-  PATH_SUFFIXES bin lib)
+        Z3_LIBRARIES
+        REQUIRED
+        NAMES z3
+        HINTS ${Z3_DIR} ENV Z3_DIR
+        PATH_SUFFIXES bin lib)
 find_path(
-  Z3_INCLUDES
-  REQUIRED
-  NAMES z3++.h
-  HINTS ${Z3_DIR} ENV Z3_DIR
-  PATH_SUFFIXES include z3)
+        Z3_INCLUDES
+        REQUIRED
+        NAMES z3++.h
+        HINTS ${Z3_DIR} ENV Z3_DIR
+        PATH_SUFFIXES include z3)
 message(STATUS "Z3 STATUS:
   Z3 library file:        ${Z3_LIBRARIES}
   Z3 include directory:   ${Z3_INCLUDES}")
@@ -141,8 +143,8 @@ add_subdirectory(svf-llvm)
 # SVF had them enabled; since the LLVM instance is found in the "svf-llvm" subdirectory, it sets the
 # below variables in its parent directory (i.e. for this CMakeLists.txt) so check them here
 add_compile_definitions(
-  $<IF:$<BOOL:${SVF_ENABLE_RTTI}>,,-fno-rtti>
-  $<IF:$<BOOL:${SVF_ENABLE_EXCEPTIONS}>,,-fno-exceptions>
+        $<IF:$<BOOL:${SVF_ENABLE_RTTI}>,,-fno-rtti>
+        $<IF:$<BOOL:${SVF_ENABLE_EXCEPTIONS}>,,-fno-exceptions>
 )
 
 # Export the SVF target for including SVF from CMake using find_package(SVF)
@@ -150,29 +152,33 @@ include(CMakePackageConfigHelpers)
 
 # Generate SVFConfig.cmake
 configure_package_config_file(
-  .config.cmake.in
-  ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfig.cmake
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SVF
-  PATH_VARS
-    SVF_INSTALL_ROOT
-    SVF_INSTALL_BIN_DIR
-    SVF_INSTALL_LIB_DIR
-    SVF_INSTALL_INCLUDE_DIR
-    SVF_INSTALL_EXTAPI_DIR
-    SVF_INSTALL_EXTAPI_FILE
+        .config.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SVF
+        PATH_VARS
+        SVF_INSTALL_ROOT
+        SVF_INSTALL_BIN_DIR
+        SVF_INSTALL_LIB_DIR
+        SVF_INSTALL_INCLUDE_DIR
+        SVF_INSTALL_EXTAPI_DIR
+        SVF_INSTALL_EXTAPI_FILE
 )
 
 # Generate SVFConfigVersion.cmake
 write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfigVersion.cmake"
-  VERSION "${SVF_VERSION_MAJOR}.${SVF_VERSION_MINOR}"
-  COMPATIBILITY AnyNewerVersion
+        "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfigVersion.cmake"
+        VERSION "${SVF_VERSION_MAJOR}.${SVF_VERSION_MINOR}"
+        COMPATIBILITY AnyNewerVersion
 )
 
 # Install above CMake files as part of installation
 install(
-  FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfigVersion.cmake
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SVF
+        FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SVF
 )
+
+target_compile_definitions(wpa PUBLIC GOOGLE_STRIP_LOG=1)
+
+target_link_libraries (wpa PUBLIC glog::glog)

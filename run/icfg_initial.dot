@@ -1,0 +1,15 @@
+digraph "ICFG" {
+	label="ICFG";
+
+	Node0x555555f46b70 [shape=record,color=purple,label="{GlobalICFGNode0\nCopyStmt: [Var1 \<-- Var0]  \n ptr null \{ constant data \}\nAddrStmt: [Var9 \<-- Var3]  \n i32 1 \{ constant data \}\nAddrStmt: [Var11 \<-- Var3]  \n i32 0 \{ constant data \}\nAddrStmt: [Var4 \<-- Var5]  \nFunction: main }"];
+	Node0x555555f46b70 -> Node0x555555f2b090[style=solid];
+	Node0x555555f2b090 [shape=record,color=yellow,label="{FunEntryICFGNode1 \{fun: main\}}"];
+	Node0x555555f2b090 -> Node0x555555f68aa0[style=solid];
+	Node0x555555f68aa0 [shape=record,color=black,label="{IntraICFGNode2 \{fun: main\}\nAddrStmt: [Var7 \<-- Var8]  \n   %1 = alloca i32, align 4 }"];
+	Node0x555555f68aa0 -> Node0x555555fb28e0[style=solid];
+	Node0x555555fb28e0 [shape=record,color=black,label="{IntraICFGNode3 \{fun: main\}\nStoreStmt: [Var7 \<-- Var11]  \n   store i32 0, ptr %1, align 4 }"];
+	Node0x555555fb28e0 -> Node0x555555fa07a0[style=solid];
+	Node0x555555fa07a0 [shape=record,color=black,label="{IntraICFGNode4 \{fun: main\}\n   ret i32 0 }"];
+	Node0x555555fa07a0 -> Node0x555555f9fbe0[style=solid];
+	Node0x555555f9fbe0 [shape=record,color=green,label="{FunExitICFGNode5 \{fun: main\}\nPhiStmt: [Var6 \<-- ([Var11, ICFGNode4],)]  \n   ret i32 0 }"];
+}

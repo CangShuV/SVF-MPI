@@ -32,6 +32,7 @@
 #include "Util/CommandLine.h"
 #include "Util/Options.h"
 #include "SVFIR/SVFFileSystem.h"
+#include <glog/logging.h>
 
 
 using namespace llvm;
@@ -65,7 +66,7 @@ int main(int argc, char** argv)
         pag = builder.build();
 
     }
-
+    LOG(INFO) << "start logging";
     WPAPass wpa;
     wpa.runOnModule(pag);
 
