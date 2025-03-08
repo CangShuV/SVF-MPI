@@ -33,6 +33,7 @@
 #include "MemoryModel/PointsTo.h"
 #include "WPA/Andersen.h"
 #include "WPA/Steensgaard.h"
+#include <glog/logging.h>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -57,6 +58,96 @@ u32_t AndersenBase::MaxPointsToSetSize = 0;
 double AndersenBase::timeOfProcessCopyGep = 0;
 double AndersenBase::timeOfProcessLoadStore = 0;
 double AndersenBase::timeOfUpdateCallGraph = 0;
+
+void Monitor::parseRecord(std::string call, std::string access)
+{
+        // 定义一个辅助函数，用于提取 "ln" 对应的数字
+    auto extractLnValue = [](const std::string& str) -> int {
+        // 查找 "ln": 的位置
+        size_t pos = str.find(R"("ln":)");
+        if (pos == std::string::npos) {
+            return -1; // 如果找不到 "ln":，返回 -1
+        }
+
+        // 跳过 "ln": 和空格
+        pos += 5; // "ln": 的长度是 5
+        while (pos < str.size() && std::isspace(str[pos])) {
+            pos++;
+        }
+
+        // 提取数字部分
+        int lnValue = 0;
+        while (pos < str.size() && std::isdigit(str[pos])) {
+            lnValue = lnValue * 10 + (str[pos] - '0');
+            pos++;
+        }
+
+        return lnValue;
+    };
+
+    // 定义一个辅助函数，用于提取 "fl" 对应的字符串
+    auto extractFlValue = [](const std::string& str) -> std::string {
+        // 查找 "fl": 的位置
+        size_t pos = str.find(R"("fl":)");
+        if (pos == std::string::npos) {
+            return ""; // 如果找不到 "fl":，返回空字符串
+        }
+
+        // 跳过 "fl": 和空格
+        pos += 5; // "fl": 的长度是 5
+        while (pos < str.size() && std::isspace(str[pos])) {
+            pos++;
+        }
+
+        // 提取字符串部分（假设字符串用双引号包裹）
+        if (pos < str.size() && str[pos] == '"') {
+            pos++; // 跳过开头的双引号
+            size_t endPos = str.find('"', pos); // 找到结尾的双引号
+            if (endPos != std::string::npos) {
+                return str.substr(pos, endPos - pos);
+            }
+        }
+
+        return ""; // 如果格式不正确，返回空字符串
+    };
+
+    // 从 call 字符串中提取 "ln" 对应的数字和 "fl" 对应的字符串
+    int callLnValue = extractLnValue(call);
+    std::string callFlValue = extractFlValue(call);
+
+    // if (callLnValue != -1) {
+    //     LOG(INFO) << "Call ln: " << callLnValue ;
+    // } else {
+    //     LOG(INFO) << "Call ln not found!" ;
+    // }
+    //
+    // if (!callFlValue.empty()) {
+    //     LOG(INFO) << "Call fl: " << callFlValue ;
+    // } else {
+    //     LOG(INFO) << "Call fl not found!" ;
+    // }
+
+    // 从 access 字符串中提取 "ln" 对应的数字和 "fl" 对应的字符串
+    int accessLnValue = extractLnValue(access);
+    std::string accessFlValue = extractFlValue(access);
+
+    // if (accessLnValue != -1) {
+    //     LOG(INFO) << "Access ln: " << accessLnValue ;
+    // } else {
+    //     LOG(INFO) << "Access ln not found!" ;
+    // }
+    //
+    // if (!accessFlValue.empty()) {
+    //     LOG(INFO) << "Access fl: " << accessFlValue ;
+    // } else {
+    //     LOG(INFO) << "Access fl not found!" ;
+    // }
+
+    if(accessLnValue > 0  && callLnValue > 0)
+    {
+        log[make_pair(callLnValue, callFlValue)].insert(make_pair(accessLnValue, accessFlValue));
+    }
+}
 
 /*!
  * Destructor
@@ -127,6 +218,120 @@ void AndersenBase::solveConstraints()
     DBOUT(DGENERAL, outs() << SVFUtil::pasMsg("Finish Solving Constraints\n"));
 }
 
+void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
+
+    set<string> specialFunctions = {"foo", "MPI_Send", "MPI_Recv",
+        "MPI_Bcast", "MPI_Scatter","MPI_Gather",
+        "MPI_Allgather","MPI_Alltoall",
+        "MPI_Reduce", "MPI_Allreduce"};
+
+    // LOG(INFO) << node->toString();
+    // 判断是否是函数调用节点
+    if (auto* callnode = dyn_cast<CallICFGNode>(node)) {
+        // 获取调用的函数
+        auto* callinst = callnode->getCallSite();
+        auto callsite = getSVFCallSite(callinst);
+        LOG(INFO) << callsite.getCalledFunction()->getName();
+        if (specialFunctions.count(callsite.getCalledFunction()->getName())) {
+
+            auto buf = callsite.getArgument(0);
+
+            for(auto i : monitor.buffers)
+            {
+                if(alias(i.buf, buf))
+                {
+                    LOG(INFO) << "trigger!";
+                    LOG(INFO) << i.buf->getSourceLoc();
+                    LOG(INFO) << callinst->getSourceLoc();
+                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc());
+                }
+            }
+
+            Buffer buffer(callinst, buf);
+            monitor.buffers.push_back(buffer);
+        }
+    } else if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
+    {
+        auto stmts = intraNode->getSVFStmts();
+        for(auto stmt : stmts)
+        {
+            if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
+                for(auto i : monitor.buffers)
+                {
+                    if(alias(i.buf, loadStmt->getRHSVar()->getValue()))
+                    {
+                        LOG(INFO) << "trigger!";
+                        LOG(INFO) <<i.callinst->getSourceLoc();
+                        LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
+                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc());
+                    }
+                }
+            }
+            else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
+                for(auto i : monitor.buffers)
+                {
+                    if(alias(i.buf, storeStmt->getLHSVar()->getValue()))
+                    {
+                        LOG(INFO) << "trigger!";
+                        LOG(INFO) <<i.callinst->getSourceLoc();
+                        LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
+                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc());
+                    }
+                }
+            }
+        }
+    }
+}
+
+void AndersenBase::traverseICFG(const ICFGNode* startNode, Monitor& monitor) {
+    std::set<const ICFGNode*> visited;
+    std::stack<const ICFGNode*> stack;
+    stack.push(startNode);
+
+    while (!stack.empty()) {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        if (visited.find(currentNode) != visited.end()) {
+            continue; // 已经访问过，跳过
+        }
+        visited.insert(currentNode);
+
+        // LOG(INFO) << "[PATH]" << currentNode->toString();
+
+        // 处理当前节点
+        processNode(currentNode, monitor);
+
+
+        // 遍历所有出边
+        for (auto edge : currentNode->getOutEdges()) {
+            ICFGNode* nextNode = edge->getDstNode();
+            stack.push(nextNode);
+        }
+    }
+}
+
+void AndersenBase::ptsMatch()
+{
+
+    Monitor monitor;
+    auto *node = pag->getICFG()->getGlobalICFGNode();
+    traverseICFG(node, monitor);
+
+    for(const auto& i : monitor.log)
+    {
+        LOG(INFO) << "[Call]";
+        LOG(INFO) << "ln: " << i.first.first << " fl: " << i.first.second;
+        LOG(INFO) << "[Accesses]";
+        for(const auto& j : i.second)
+        {
+            LOG(INFO) << "ln: " << j.first << " fl: " << j.second;
+        }
+        LOG(INFO) << "[Call END]";
+    }
+
+}
+
 /*!
  * Andersen analysis
  */
@@ -141,6 +346,7 @@ void AndersenBase::analyze()
         if(Options::WriteAnder().empty())
         {
             initialize();
+            ptsMatch();
             solveConstraints();
             finalize();
         }

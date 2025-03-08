@@ -41,9 +41,29 @@
 #include "SVFIR/SVFIR.h"
 #include "Graphs/ConsG.h"
 #include "Util/Options.h"
+#include <glog/logging.h>
 
 namespace SVF
 {
+
+    class Buffer
+    {
+    public:
+        const SVFInstruction* callinst;
+        const SVFValue* buf;
+        Buffer(const SVFInstruction* call_inst, const SVFValue* buf)
+            : callinst(call_inst), buf(buf)
+        {
+        }
+    };
+
+    class Monitor{
+    public:
+        std::vector<Buffer> buffers;
+        std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
+
+        void parseRecord(std::string call, std::string access);
+    };
 
 class SVFModule;
 
@@ -55,6 +75,12 @@ typedef WPASolver<ConstraintGraph*> WPAConstraintSolver;
 class AndersenBase:  public WPAConstraintSolver, public BVDataPTAImpl
 {
 public:
+
+    // add by bz
+    void processNode(const ICFGNode* node, Monitor& monitor);
+    void traverseICFG(const ICFGNode* startNode, Monitor& monitor);
+    void ptsMatch();
+
 
     /// Constructor
     AndersenBase(SVFIR* _pag, PTATY type = Andersen_BASE, bool alias_check = true)

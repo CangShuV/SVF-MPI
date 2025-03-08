@@ -8,6 +8,7 @@ project(SVF
 )
 
 find_package (glog 0.7.1 REQUIRED)
+link_libraries (glog::glog)
 
 # Ensure installation directories like ${CMAKE_INSTALL_LIBDIR} are available
 include(GNUInstallDirs)
@@ -178,7 +179,3 @@ install(
         ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/SVF/SVFConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SVF
 )
-
-target_compile_definitions(wpa PUBLIC GOOGLE_STRIP_LOG=1)
-
-target_link_libraries (wpa PUBLIC glog::glog)
