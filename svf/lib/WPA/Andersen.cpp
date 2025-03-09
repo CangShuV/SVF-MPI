@@ -234,8 +234,17 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
 
         if (specialFunctions.count(callsite.getCalledFunction()->getName())) {
 
+            /*
+             * TODO:Some mpi_comm_call have two buffers(ie Bcast)
+             *      and buffer pointer ArgNo is different in calls.
+             */
             auto buf = callsite.getArgument(0);
 
+            /*
+             * TODO:Add another buffers in monitor, one for send_buffer
+             *      another for recv_buffer. Check different buffer when
+             *      handle load/store inst.
+             */
             for(auto i : monitor.buffers)
             {
                 if(alias(i.buf, buf))
@@ -317,8 +326,18 @@ void AndersenBase::ptsMatch()
 
     Monitor monitor;
     auto *node = pag->getICFG()->getGlobalICFGNode();
+
+    /*
+     * TODO:Traverse once first to monitor all buffers in program
+     */
     traverseICFG(node, monitor);
 
+
+    /*
+     * TODO:Add another traverse to check if load/store/call(noted that
+     *      mpi_comm_call will also access memory) inst
+     *      triggers any buffer.
+     */
 
     // print all logs in monitor
     for(const auto& i : monitor.log)
