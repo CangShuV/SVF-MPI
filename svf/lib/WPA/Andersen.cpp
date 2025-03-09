@@ -231,7 +231,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
         // 获取调用的函数
         auto* callinst = callnode->getCallSite();
         auto callsite = getSVFCallSite(callinst);
-        LOG(INFO) << callsite.getCalledFunction()->getName();
+
         if (specialFunctions.count(callsite.getCalledFunction()->getName())) {
 
             auto buf = callsite.getArgument(0);
@@ -250,7 +250,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
             Buffer buffer(callinst, buf);
             monitor.buffers.push_back(buffer);
         }
-    } else if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
+    }
+    else if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
     {
         auto stmts = intraNode->getSVFStmts();
         for(auto stmt : stmts)
@@ -318,6 +319,8 @@ void AndersenBase::ptsMatch()
     auto *node = pag->getICFG()->getGlobalICFGNode();
     traverseICFG(node, monitor);
 
+
+    // print all logs in monitor
     for(const auto& i : monitor.log)
     {
         LOG(INFO) << "[Call]";
@@ -346,9 +349,9 @@ void AndersenBase::analyze()
         if(Options::WriteAnder().empty())
         {
             initialize();
-            ptsMatch();
             solveConstraints();
             finalize();
+            ptsMatch();
         }
         else
         {

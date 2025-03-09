@@ -1,0 +1,1 @@
+clang -O0 -g -emit-llvm -fno-discard-value-names -c test.c -o test.bc

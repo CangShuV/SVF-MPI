@@ -15,6 +15,7 @@ doxygen/
 !.gitignore
 *~
 *.o
+*.dot
 *.out
 *.ll
 *.bc
