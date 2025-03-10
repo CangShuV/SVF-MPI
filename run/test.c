@@ -1,16 +1,23 @@
 #include <stdio.h>
-int* foo(int* x, int val){
-    return x;
+
+int mpi_comm(int *x, int val) {
+    return val;
 }
-int main(){
-int a = 0;
-int buf = 0;
-for(int i = 0; i < a; i++){
-int *p = &buf;
-*p = 1;
-foo(p, 1);
-int *q = &buf;
-printf("%d", *q);
+
+int mpi_comm(int *send, int*recv, int val){
+    return val;
 }
-return 0;
+
+int main() {
+    int send_buf = 0;
+    int recv_buf = 0;
+    for (int i = 0; i < 10; i++) {
+        int*p = &send_buf;
+        mpi_comm(p, 1);
+        *p=1;
+        mpi_comm(&send_buf, &recv_buf, 2);
+        printf("%d", recv_buf);
+        printf("body");
+    }
+    return 0;
 }
