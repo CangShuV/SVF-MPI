@@ -46,13 +46,33 @@
 namespace SVF
 {
 
+    enum BufferType {
+        SEND_BUFFER,
+        RECV_BUFFER,
+        SEND_AND_RECV_BUFFER,
+        UNKNOWN_BUFFER
+    };
+
+    inline const char* bufferTypeToString(BufferType type)
+    {
+        switch (type)
+        {
+        case SEND_BUFFER: return "Send Buffer";
+        case RECV_BUFFER: return "Recv Buffer";
+        case SEND_AND_RECV_BUFFER: return "Send & Recv Buffer";
+        case UNKNOWN_BUFFER: return "Unknown Buffer";
+        default: return "Invalid Buffer";
+        }
+    }
+
     class Buffer
     {
     public:
         const SVFInstruction* callinst;
         const SVFValue* buf;
-        Buffer(const SVFInstruction* call_inst, const SVFValue* buf)
-            : callinst(call_inst), buf(buf)
+        const BufferType type;
+        Buffer(const SVFInstruction* call_inst, const SVFValue* buf, const BufferType& type)
+            : callinst(call_inst), buf(buf), type(type)
         {
         }
     };
@@ -60,7 +80,24 @@ namespace SVF
     class Monitor{
     public:
         std::vector<Buffer> buffers;
-        std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
+        std::vector<const SVFStmt*> stmts;
+
+        struct MonitorLogData {
+            int lines_index;
+            std::string file_name;
+            bool operator<(const MonitorLogData &x2) const {
+                if (lines_index != x2.lines_index) {
+                    return lines_index < x2.lines_index;
+                } else {
+                    return file_name < x2.file_name;
+                }
+            }
+            MonitorLogData(int lines, std::string &name)
+                : lines_index(lines), file_name(name) {}
+        };
+
+        std::map<MonitorLogData, std::set<MonitorLogData>> log;
+        // std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
 
         void parseRecord(std::string call, std::string access);
     };

@@ -75,6 +75,7 @@ add_compile_options(
         "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wall>"
         "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Werror>"
         "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wno-deprecated-declarations>"
+        "$<$<BOOL:${SVF_WARN_AS_ERROR}>:-Wno-overloaded-virtual>"
 )
 
 # Keep assertions enabled if requested

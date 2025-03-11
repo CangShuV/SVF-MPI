@@ -61,7 +61,7 @@ double AndersenBase::timeOfUpdateCallGraph = 0;
 
 void Monitor::parseRecord(std::string call, std::string access)
 {
-        // 定义一个辅助函数，用于提取 "ln" 对应的数字
+    // 定义一个辅助函数，用于提取 "ln" 对应的数字
     auto extractLnValue = [](const std::string& str) -> int {
         // 查找 "ln": 的位置
         size_t pos = str.find(R"("ln":)");
@@ -145,7 +145,7 @@ void Monitor::parseRecord(std::string call, std::string access)
 
     if(accessLnValue > 0  && callLnValue > 0)
     {
-        log[make_pair(callLnValue, callFlValue)].insert(make_pair(accessLnValue, accessFlValue));
+        log[{callLnValue, callFlValue}].insert({accessLnValue, accessFlValue});
     }
 }
 
@@ -220,34 +220,56 @@ void AndersenBase::solveConstraints()
 
 void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
 
-    set<string> specialFunctions = {"foo", "MPI_Send", "MPI_Recv",
-        "MPI_Bcast", "MPI_Scatter","MPI_Gather",
-        "MPI_Allgather","MPI_Alltoall",
-        "MPI_Reduce", "MPI_Allreduce"};
+    set<string> specialFunctions = {
+        "foo",         "MPI_Send",     "MPI_Recv",      "MPI_Bcast",
+        "MPI_Scatter", "MPI_Gather",   "MPI_Allgather", "MPI_Alltoall",
+        "MPI_Reduce",  "MPI_Allreduce"};
 
     // LOG(INFO) << node->toString();
     // 判断是否是函数调用节点
-    if (auto* callnode = dyn_cast<CallICFGNode>(node)) {
+    if (auto *callnode = dyn_cast<CallICFGNode>(node)) {
         // 获取调用的函数
-        auto* callinst = callnode->getCallSite();
+        auto *callinst = callnode->getCallSite();
         auto callsite = getSVFCallSite(callinst);
 
+        // 检查是否是 MPI 相关函数
         if (specialFunctions.count(callsite.getCalledFunction()->getName())) {
+            auto buf = callsite.getArgument(0); // 获取第一个缓冲区参数
 
             /*
              * TODO:Some mpi_comm_call have two buffers(ie Bcast)
              *      and buffer pointer ArgNo is different in calls.
              */
-            auto buf = callsite.getArgument(0);
+
+            /*
+             * 根据函数名判断是发送缓冲区还是接收缓冲区
+             * 对应的函数通常会有一个输入参数，用于区分是发送还是接收
+             */
+            BufferType bufferType;
+            auto &calledFunctionName = callsite.getCalledFunction()->getName();
+            if (calledFunctionName == "MPI_Send") {
+                bufferType = SEND_BUFFER;
+            } else if (calledFunctionName == "MPI_Recv") {
+                bufferType = RECV_BUFFER;
+            } else if (calledFunctionName == "MPI_Bcast") {
+                bufferType = SEND_AND_RECV_BUFFER;
+            } else {
+                bufferType = UNKNOWN_BUFFER;
+            }
 
             /*
              * TODO:Add another buffers in monitor, one for send_buffer
              *      another for recv_buffer. Check different buffer when
-             *      handle load/store inst.
+             *      handle load/store instruction.
              */
-            for(auto i : monitor.buffers)
+
+            /*
+             * 根据缓冲区类型添加到 monitor 中
+             * send_buffer 和 recv_buffer 会有不同的处理方式
+             */
+            for (auto i : monitor.buffers)
             {
-                if(alias(i.buf, buf))
+                if (alias(i.buf, buf))
                 {
                     LOG(INFO) << "trigger!";
                     LOG(INFO) << i.buf->getSourceLoc();
@@ -256,7 +278,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                 }
             }
 
-            Buffer buffer(callinst, buf);
+            // 创建一个新的缓冲区并添加到 monitor
+            Buffer buffer(callinst, buf, bufferType);
             monitor.buffers.push_back(buffer);
         }
     }
@@ -266,6 +289,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
         for(auto stmt : stmts)
         {
             if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
+                monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+
                 for(auto i : monitor.buffers)
                 {
                     if(alias(i.buf, loadStmt->getRHSVar()->getValue()))
@@ -278,6 +303,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                 }
             }
             else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
+                monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+
                 for(auto i : monitor.buffers)
                 {
                     if(alias(i.buf, storeStmt->getLHSVar()->getValue()))
@@ -339,15 +366,50 @@ void AndersenBase::ptsMatch()
      *      triggers any buffer.
      */
 
+    /*
+     * 通过遍历程序中的控制流，检查每条指令是否访问了缓冲区
+     * 如果是读取或写入操作，检查是否触发了 send_buffer 或 recv_buffer。
+     */
+
+    // 第二次遍历，检查 load/store/call 指令
+    for (const auto& stmt : monitor.stmts) {
+        if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
+            // 如果是 load 指令，检查访问的是哪个缓冲区
+            for (auto& buf : monitor.buffers) {
+                if (alias(buf.buf, loadStmt->getRHSVar()->getValue())) {
+                    // 如果 load 指令触发了缓冲区，记录相关信息
+                    LOG(INFO) << "[Load Access]";
+                    LOG(INFO) << "ln: " << loadStmt->getInst()->getSourceLoc();
+                    LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
+                    LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
+                    monitor.parseRecord(buf.buf->getSourceLoc(), loadStmt->getInst()->getSourceLoc());
+                }
+            }
+        }
+        else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
+            // 如果是 store 指令，检查是否访问了缓冲区
+            for (auto& buf : monitor.buffers) {
+                if (alias(buf.buf, storeStmt->getLHSVar()->getValue())) {
+                    // 如果 store 指令触发了缓冲区，记录相关信息
+                    LOG(INFO) << "[Store Access]";
+                    LOG(INFO) << "ln: " << storeStmt->getInst()->getSourceLoc();
+                    LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
+                    LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
+                    monitor.parseRecord(buf.buf->getSourceLoc(), storeStmt->getInst()->getSourceLoc());
+                }
+            }
+        }
+    }
+
     // print all logs in monitor
     for(const auto& i : monitor.log)
     {
         LOG(INFO) << "[Call]";
-        LOG(INFO) << "ln: " << i.first.first << " fl: " << i.first.second;
+        LOG(INFO) << "ln: " << i.first.lines_index << " fl: " << i.first.file_name;
         LOG(INFO) << "[Accesses]";
         for(const auto& j : i.second)
         {
-            LOG(INFO) << "ln: " << j.first << " fl: " << j.second;
+            LOG(INFO) << "ln: " << j.lines_index << " fl: " << j.file_name;
         }
         LOG(INFO) << "[Call END]";
     }
