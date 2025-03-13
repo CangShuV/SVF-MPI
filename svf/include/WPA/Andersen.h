@@ -45,13 +45,23 @@
 
 namespace SVF
 {
-
-    enum BufferType {
-        SEND_BUFFER,
+    enum BufferType : int
+    {
+        SEND_BUFFER = 0,
         RECV_BUFFER,
         SEND_AND_RECV_BUFFER,
         UNKNOWN_BUFFER
     };
+
+    enum StmtType : int
+    {
+        LOAD = 0,
+        STORE,
+        LOAD_AND_STORE,
+        CALL,
+        UNKNOWN
+    };
+
 
     inline const char* bufferTypeToString(BufferType type)
     {
@@ -64,6 +74,20 @@ namespace SVF
         default: return "Invalid Buffer";
         }
     }
+
+    inline const char* stmtTypeToString(StmtType type)
+    {
+        switch (type)
+        {
+        case LOAD: return "Load";
+        case STORE: return "Store";
+        case LOAD_AND_STORE: return "Load & Store";
+        case CALL: return "Call";
+        case UNKNOWN: return "Unknown";
+        default: return "Invalid";
+        }
+    }
+
 
     class Buffer
     {
@@ -82,9 +106,12 @@ namespace SVF
         std::vector<Buffer> buffers;
         std::vector<const SVFStmt*> stmts;
 
-        struct MonitorLogData {
+        struct MonitorLogData
+        {
             int lines_index;
             std::string file_name;
+            int type;
+
             bool operator<(const MonitorLogData &x2) const {
                 if (lines_index != x2.lines_index) {
                     return lines_index < x2.lines_index;
@@ -92,14 +119,18 @@ namespace SVF
                     return file_name < x2.file_name;
                 }
             }
-            MonitorLogData(int lines, std::string &name)
-                : lines_index(lines), file_name(name) {}
+
+            MonitorLogData(int lines, std::string &fl_name, int type)
+                : lines_index(lines), file_name(fl_name), type(type) {}
         };
 
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
         // std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
 
-        void parseRecord(std::string call, std::string access);
+        void parseRecord(std::string call, std::string access,
+                         BufferType buf_type = UNKNOWN_BUFFER,
+                         StmtType stmt_type = UNKNOWN
+        );
     };
 
 class SVFModule;

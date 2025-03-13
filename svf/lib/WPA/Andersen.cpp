@@ -59,7 +59,7 @@ double AndersenBase::timeOfProcessCopyGep = 0;
 double AndersenBase::timeOfProcessLoadStore = 0;
 double AndersenBase::timeOfUpdateCallGraph = 0;
 
-void Monitor::parseRecord(std::string call, std::string access)
+void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType buf_type, SVF::StmtType stmt_type)
 {
     // 定义一个辅助函数，用于提取 "ln" 对应的数字
     auto extractLnValue = [](const std::string& str) -> int {
@@ -145,7 +145,7 @@ void Monitor::parseRecord(std::string call, std::string access)
 
     if(accessLnValue > 0  && callLnValue > 0)
     {
-        log[{callLnValue, callFlValue}].insert({accessLnValue, accessFlValue});
+        log[{callLnValue, callFlValue, int(buf_type)}].insert({accessLnValue, accessFlValue, int(stmt_type)});
     }
 }
 
@@ -246,15 +246,20 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
              * 对应的函数通常会有一个输入参数，用于区分是发送还是接收
              */
             BufferType bufferType;
+            StmtType stmtType;
             auto &calledFunctionName = callsite.getCalledFunction()->getName();
             if (calledFunctionName == "MPI_Send") {
                 bufferType = SEND_BUFFER;
+                stmtType = LOAD;
             } else if (calledFunctionName == "MPI_Recv") {
                 bufferType = RECV_BUFFER;
+                stmtType = STORE;
             } else if (calledFunctionName == "MPI_Bcast") {
                 bufferType = SEND_AND_RECV_BUFFER;
+                stmtType = LOAD_AND_STORE;
             } else {
                 bufferType = UNKNOWN_BUFFER;
+                stmtType = UNKNOWN;
             }
 
             /*
@@ -274,7 +279,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                     LOG(INFO) << "trigger!";
                     LOG(INFO) << i.buf->getSourceLoc();
                     LOG(INFO) << callinst->getSourceLoc();
-                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc());
+                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc(), bufferType, stmtType);
                 }
             }
 
@@ -289,7 +294,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
         for(auto stmt : stmts)
         {
             if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
-                monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+                // monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
 
                 for(auto i : monitor.buffers)
                 {
@@ -298,12 +303,12 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) << "trigger!";
                         LOG(INFO) <<i.callinst->getSourceLoc();
                         LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
-                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc());
+                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), i.type, LOAD);
                     }
                 }
             }
             else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
-                monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+                // monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
 
                 for(auto i : monitor.buffers)
                 {
@@ -312,7 +317,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) << "trigger!";
                         LOG(INFO) <<i.callinst->getSourceLoc();
                         LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
-                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc());
+                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), i.type, STORE);
                     }
                 }
             }
@@ -372,44 +377,46 @@ void AndersenBase::ptsMatch()
      */
 
     // 第二次遍历，检查 load/store/call 指令
-    for (const auto& stmt : monitor.stmts) {
-        if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
-            // 如果是 load 指令，检查访问的是哪个缓冲区
-            for (auto& buf : monitor.buffers) {
-                if (alias(buf.buf, loadStmt->getRHSVar()->getValue())) {
-                    // 如果 load 指令触发了缓冲区，记录相关信息
-                    LOG(INFO) << "[Load Access]";
-                    LOG(INFO) << "ln: " << loadStmt->getInst()->getSourceLoc();
-                    LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
-                    LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
-                    monitor.parseRecord(buf.buf->getSourceLoc(), loadStmt->getInst()->getSourceLoc());
-                }
-            }
-        }
-        else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
-            // 如果是 store 指令，检查是否访问了缓冲区
-            for (auto& buf : monitor.buffers) {
-                if (alias(buf.buf, storeStmt->getLHSVar()->getValue())) {
-                    // 如果 store 指令触发了缓冲区，记录相关信息
-                    LOG(INFO) << "[Store Access]";
-                    LOG(INFO) << "ln: " << storeStmt->getInst()->getSourceLoc();
-                    LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
-                    LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
-                    monitor.parseRecord(buf.buf->getSourceLoc(), storeStmt->getInst()->getSourceLoc());
-                }
-            }
-        }
-    }
+    // for (const auto& stmt : monitor.stmts) {
+    //     if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
+    //         // 如果是 load 指令，检查访问的是哪个缓冲区
+    //         for (auto& buf : monitor.buffers) {
+    //             if (alias(buf.buf, loadStmt->getRHSVar()->getValue())) {
+    //                 // 如果 load 指令触发了缓冲区，记录相关信息
+    //                 // LOG(INFO) << "[Load Access]";
+    //                 // LOG(INFO) << "ln: " << loadStmt->getInst()->getSourceLoc();
+    //                 // LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
+    //                 // LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
+    //                 monitor.parseRecord(buf.buf->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), buf.type, LOAD);
+    //             }
+    //         }
+    //     }
+    //     else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
+    //         // 如果是 store 指令，检查是否访问了缓冲区
+    //         for (auto& buf : monitor.buffers) {
+    //             if (alias(buf.buf, storeStmt->getLHSVar()->getValue())) {
+    //                 // 如果 store 指令触发了缓冲区，记录相关信息
+    //                 // LOG(INFO) << "[Store Access]";
+    //                 // LOG(INFO) << "ln: " << storeStmt->getInst()->getSourceLoc();
+    //                 // LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
+    //                 // LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
+    //                 monitor.parseRecord(buf.buf->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), buf.type, STORE);
+    //             }
+    //         }
+    //     }
+    // }
 
     // print all logs in monitor
-    for(const auto& i : monitor.log)
+    for(const auto& it : monitor.log)
     {
         LOG(INFO) << "[Call]";
-        LOG(INFO) << "ln: " << i.first.lines_index << " fl: " << i.first.file_name;
+        LOG(INFO) << "ln: " << it.first.lines_index << "  fl: " << it.first.file_name <<
+            "  Buffer type: " << bufferTypeToString(BufferType(it.first.type));
         LOG(INFO) << "[Accesses]";
-        for(const auto& j : i.second)
+        for (const auto& jt : it.second)
         {
-            LOG(INFO) << "ln: " << j.lines_index << " fl: " << j.file_name;
+            LOG(INFO) << "ln: " << jt.lines_index << "  fl: " << jt.file_name <<
+                "  Access type: " << stmtTypeToString(StmtType(jt.type));
         }
         LOG(INFO) << "[Call END]";
     }
