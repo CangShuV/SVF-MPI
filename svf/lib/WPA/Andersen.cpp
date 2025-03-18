@@ -59,7 +59,15 @@ double AndersenBase::timeOfProcessCopyGep = 0;
 double AndersenBase::timeOfProcessLoadStore = 0;
 double AndersenBase::timeOfUpdateCallGraph = 0;
 
-void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType buf_type, SVF::StmtType stmt_type)
+// 在ICFG类中添加方法获取最内层循环（假设列表顺序为外层到内层）
+const SVFLoop* AndersenBase::getInnermostSVFLoop(const ICFGNode* node) const {
+    auto loopVec = pag->getICFG()->getIcfgNodeToSVFLoopVec();
+    auto it = loopVec.find(node);
+    return (it != loopVec.end() && !it->second.empty()) ?
+           it->second.back() : nullptr;
+}
+
+std::pair<int, std::string> Monitor::parse(std::string inst_info)
 {
     // 定义一个辅助函数，用于提取 "ln" 对应的数字
     auto extractLnValue = [](const std::string& str) -> int {
@@ -111,9 +119,9 @@ void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType 
         return ""; // 如果格式不正确，返回空字符串
     };
 
-    // 从 call 字符串中提取 "ln" 对应的数字和 "fl" 对应的字符串
-    int callLnValue = extractLnValue(call);
-    std::string callFlValue = extractFlValue(call);
+    // 从 inst_info 字符串中提取 "ln" 对应的数字和 "fl" 对应的字符串
+    int instLnValue = extractLnValue(inst_info);
+    std::string instFlValue = extractFlValue(inst_info);
 
     // if (callLnValue != -1) {
     //     LOG(INFO) << "Call ln: " << callLnValue ;
@@ -127,25 +135,77 @@ void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType 
     //     LOG(INFO) << "Call fl not found!" ;
     // }
 
-    // 从 access 字符串中提取 "ln" 对应的数字和 "fl" 对应的字符串
-    int accessLnValue = extractLnValue(access);
-    std::string accessFlValue = extractFlValue(access);
+    return make_pair(instLnValue, instFlValue);
+}
 
-    // if (accessLnValue != -1) {
-    //     LOG(INFO) << "Access ln: " << accessLnValue ;
-    // } else {
-    //     LOG(INFO) << "Access ln not found!" ;
-    // }
-    //
-    // if (!accessFlValue.empty()) {
-    //     LOG(INFO) << "Access fl: " << accessFlValue ;
-    // } else {
-    //     LOG(INFO) << "Access fl not found!" ;
-    // }
+void Monitor::recordLoopLastStmtPos(const SVFLoop* loop) {
+    if (!loop) {
+        LOG(WARNING) << "Invalid loop!";
+        return;
+    }
+
+    const SVFInstruction* lastInst = nullptr;
+
+    // 遍历循环中的所有 ICFGNode
+    for (auto it = const_cast<SVFLoop*>(loop)->ICFGNodesBegin(); it != const_cast<SVFLoop*>(loop)->ICFGNodesEnd(); ++it) {
+        const ICFGNode* icfgNode = *it;
+        const auto* intraNode = dynamic_cast<const IntraICFGNode*>(icfgNode);
+        if (!intraNode) continue;
+
+        // 获取该 ICFGNode 对应的 SVFBasicBlock
+        const SVFBasicBlock* basicBlock = intraNode->getBB();
+        if (!basicBlock) continue;
+
+        // 获取基本块的最后一条指令
+        const SVFInstruction* inst = basicBlock->back();
+        // if (inst) {
+            lastInst = inst; // 记录最新的最后一条指令
+        // }
+    }
+
+    // 处理空循环情况
+    if (!lastInst) {
+        // 可能是空循环，获取其终止指令
+        for (auto it = const_cast<SVFLoop*>(loop)->ICFGNodesBegin(); it != const_cast<SVFLoop*>(loop)->ICFGNodesEnd(); ++it) {
+            const ICFGNode* icfgNode = *it;
+            const auto* intraNode = dynamic_cast<const IntraICFGNode*>(icfgNode);
+            if (!intraNode) continue;
+
+            const SVFBasicBlock* basicBlock = intraNode->getBB();
+            if (!basicBlock) continue;
+
+            const SVFInstruction* terminator = basicBlock->getTerminator();
+            if (terminator) {
+                auto [lines, file_name] = parse(terminator->getSourceLoc());
+                loopInfoLog[loop].insert({{lines, file_name, CIRCULATION_END}, MonitorLogData()});
+                return;
+            }
+        }
+        LOG(WARNING) << "Unknown Source Location!"; // 仍然无法找到，返回未知位置
+        return;
+    }
+
+    // 返回最后一条有效语句的位置
+    auto [lines, file_name] = parse(lastInst->getSourceLoc());
+    loopInfoLog[loop].insert({{lines, file_name, CIRCULATION_END}, MonitorLogData()});
+    return;
+}
+
+void Monitor::parseRecord(std::string call, std::string access, const SVFLoop* loop_info, SVF::BufferType buf_type,
+                          SVF::StmtType stmt_type)
+{
+    auto[callLnValue, callFlValue] = parse(call);
+    auto[accessLnValue, accessFlValue] = parse(access);
 
     if(accessLnValue > 0  && callLnValue > 0)
     {
-        log[{callLnValue, callFlValue, int(buf_type)}].insert({accessLnValue, accessFlValue, int(stmt_type)});
+        MonitorLogData callLog = {callLnValue, callFlValue, int(buf_type)};
+        MonitorLogData accessLog = {accessLnValue, accessFlValue, int(stmt_type)};
+        log[callLog].insert(accessLog);
+        stmtLog.insert(accessLog);
+
+        loopInfoLog[loop_info].insert({accessLog, callLog});
+        recordLoopLastStmtPos(loop_info);
     }
 }
 
@@ -227,9 +287,9 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
 
     // LOG(INFO) << node->toString();
     // 判断是否是函数调用节点
-    if (auto *callnode = dyn_cast<CallICFGNode>(node)) {
+    if (auto *callNode = dyn_cast<CallICFGNode>(node)) {
         // 获取调用的函数
-        auto *callinst = callnode->getCallSite();
+        auto *callinst = callNode->getCallSite();
         auto callsite = getSVFCallSite(callinst);
 
         // 检查是否是 MPI 相关函数
@@ -272,6 +332,11 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
              * 根据缓冲区类型添加到 monitor 中
              * send_buffer 和 recv_buffer 会有不同的处理方式
              */
+
+            // 创建一个新的缓冲区并添加到 monitor
+            Buffer buffer(callinst, buf, bufferType);
+            monitor.buffers.push_back(buffer);
+
             for (auto i : monitor.buffers)
             {
                 if (alias(i.buf, buf))
@@ -279,13 +344,12 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                     LOG(INFO) << "trigger!";
                     LOG(INFO) << i.buf->getSourceLoc();
                     LOG(INFO) << callinst->getSourceLoc();
-                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc(), bufferType, stmtType);
+
+                    // 查询最内层循环
+                    const SVFLoop* loop = getInnermostSVFLoop(callNode);
+                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc(), loop, bufferType, stmtType);
                 }
             }
-
-            // 创建一个新的缓冲区并添加到 monitor
-            Buffer buffer(callinst, buf, bufferType);
-            monitor.buffers.push_back(buffer);
         }
     }
     else if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
@@ -294,7 +358,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
         for(auto stmt : stmts)
         {
             if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
-                // monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
 
                 for(auto i : monitor.buffers)
                 {
@@ -303,12 +367,15 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) << "trigger!";
                         LOG(INFO) <<i.callinst->getSourceLoc();
                         LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
-                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), i.type, LOAD);
+
+                        // 查询最内层循环
+                        const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), loop, i.type, LOAD);
                     }
                 }
             }
             else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
-                // monitor.stmts.push_back(stmt);  // 将每条指令添加到 stmts 中
+                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
 
                 for(auto i : monitor.buffers)
                 {
@@ -317,7 +384,10 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) << "trigger!";
                         LOG(INFO) <<i.callinst->getSourceLoc();
                         LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
-                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), i.type, STORE);
+
+                        // 查询最内层循环
+                        const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), loop, i.type, STORE);
                     }
                 }
             }
@@ -371,41 +441,6 @@ void AndersenBase::ptsMatch()
      *      triggers any buffer.
      */
 
-    /*
-     * 通过遍历程序中的控制流，检查每条指令是否访问了缓冲区
-     * 如果是读取或写入操作，检查是否触发了 send_buffer 或 recv_buffer。
-     */
-
-    // 第二次遍历，检查 load/store/call 指令
-    // for (const auto& stmt : monitor.stmts) {
-    //     if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
-    //         // 如果是 load 指令，检查访问的是哪个缓冲区
-    //         for (auto& buf : monitor.buffers) {
-    //             if (alias(buf.buf, loadStmt->getRHSVar()->getValue())) {
-    //                 // 如果 load 指令触发了缓冲区，记录相关信息
-    //                 // LOG(INFO) << "[Load Access]";
-    //                 // LOG(INFO) << "ln: " << loadStmt->getInst()->getSourceLoc();
-    //                 // LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
-    //                 // LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
-    //                 monitor.parseRecord(buf.buf->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), buf.type, LOAD);
-    //             }
-    //         }
-    //     }
-    //     else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
-    //         // 如果是 store 指令，检查是否访问了缓冲区
-    //         for (auto& buf : monitor.buffers) {
-    //             if (alias(buf.buf, storeStmt->getLHSVar()->getValue())) {
-    //                 // 如果 store 指令触发了缓冲区，记录相关信息
-    //                 // LOG(INFO) << "[Store Access]";
-    //                 // LOG(INFO) << "ln: " << storeStmt->getInst()->getSourceLoc();
-    //                 // LOG(INFO) << "Accessed buffer at: " << buf.buf->getSourceLoc();
-    //                 // LOG(INFO) << "Buffer type: " << bufferTypeToString(buf.type);
-    //                 monitor.parseRecord(buf.buf->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), buf.type, STORE);
-    //             }
-    //         }
-    //     }
-    // }
-
     // print all logs in monitor
     for(const auto& it : monitor.log)
     {
@@ -419,6 +454,21 @@ void AndersenBase::ptsMatch()
                 "  Access type: " << stmtTypeToString(StmtType(jt.type));
         }
         LOG(INFO) << "[Call END]";
+    }
+
+    for(const auto& it : monitor.loopInfoLog)
+    {
+        LOG(INFO) << "[Loop]";
+        LOG(INFO) << "loop: " << it.first;
+        LOG(INFO) << "[Accesses]";
+        for (const auto& [jt, kt] : it.second)
+        {
+            LOG(INFO) << "ln: " << jt.lines_index << "  fl: " << jt.file_name <<
+                "  Access type: " << stmtTypeToString(StmtType(jt.type)) <<
+                "  Access buffer: " << "ln: " << kt.lines_index << "  fl: " << kt.file_name <<
+                "  Buffer type: " << bufferTypeToString(BufferType(kt.type));
+        }
+        LOG(INFO) << "[Loop END]";
     }
 
 }

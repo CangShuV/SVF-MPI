@@ -59,6 +59,7 @@ namespace SVF
         STORE,
         LOAD_AND_STORE,
         CALL,
+        CIRCULATION_END,
         UNKNOWN
     };
 
@@ -83,6 +84,7 @@ namespace SVF
         case STORE: return "Store";
         case LOAD_AND_STORE: return "Load & Store";
         case CALL: return "Call";
+        case CIRCULATION_END: return "Circulation End";
         case UNKNOWN: return "Unknown";
         default: return "Invalid";
         }
@@ -104,7 +106,7 @@ namespace SVF
     class Monitor{
     public:
         std::vector<Buffer> buffers;
-        std::vector<const SVFStmt*> stmts;
+        // std::vector<const SVFStmt*> stmts;
 
         struct MonitorLogData
         {
@@ -120,17 +122,36 @@ namespace SVF
                 }
             }
 
-            MonitorLogData(int lines, std::string &fl_name, int type)
-                : lines_index(lines), file_name(fl_name), type(type) {}
+            // for test.
+            MonitorLogData():
+                lines_index(0), file_name("null"), type(0)
+            {}
+
+            MonitorLogData(int lines, std::string &fl_name, int type):
+                lines_index(lines), file_name(fl_name), type(type)
+            {}
         };
+
+        std::set<MonitorLogData> stmtLog;
 
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
         // std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
 
-        void parseRecord(std::string call, std::string access,
+        // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, {accessLog, bufferLog}>;
+        std::map<const SVFLoop*, std::set<std::pair<MonitorLogData, MonitorLogData>>> loopInfoLog;
+
+        // void loopRecord(const SVFLoop* loop_info, std::string stmt_info,
+        //                 StmtType stmt_type = UNKNOWN
+        // );
+
+        static std::pair<int, std::string> parse(std::string inst_info);
+
+        void parseRecord(std::string call, std::string access, const SVFLoop* loop_info,
                          BufferType buf_type = UNKNOWN_BUFFER,
                          StmtType stmt_type = UNKNOWN
         );
+
+        void recordLoopLastStmtPos(const SVFLoop* loop);
     };
 
 class SVFModule;
@@ -148,6 +169,9 @@ public:
     void processNode(const ICFGNode* node, Monitor& monitor);
     void traverseICFG(const ICFGNode* startNode, Monitor& monitor);
     void ptsMatch();
+
+    // add by zsz
+    const SVFLoop* getInnermostSVFLoop(const ICFGNode* node) const;
 
 
     /// Constructor

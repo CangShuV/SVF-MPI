@@ -49,19 +49,20 @@ int main() {
         printf("%d \n", ignore);
 
         *p_send = 1;
-        printf("%d \n", p_send[0]);
         MPI_Recv(recv_buffer, 5, sizeof(int), 0, 0, MPI_COMM_WORLD, NULL);
 
         thread_rank = 0;
-        MPI_Bcast(send_buffer, 5, sizeof(int), 0, MPI_COMM_WORLD); // 根进程广播数据
+        MPI_Bcast(bcast_buffer, 5, sizeof(int), 0, MPI_COMM_WORLD); // 根进程广播数据
 
         thread_rank = 1;
-        MPI_Bcast(send_buffer, 5, sizeof(int), 0, MPI_COMM_WORLD); // 接收进程接收广播的数据
+        MPI_Bcast(bcast_buffer, 5, sizeof(int), 0, MPI_COMM_WORLD); // 接收进程接收广播的数据
 
         for (int j = 0; j < 5; j++) {
             printf("%d ", recv_buffer[j]);
         }
     }
+
+    *p_send = 1;
 
     return 0;
 }
