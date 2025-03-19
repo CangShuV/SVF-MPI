@@ -96,9 +96,10 @@ namespace SVF
     public:
         const SVFInstruction* callinst;
         const SVFValue* buf;
+        const ICFGNode* node;
         const BufferType type;
-        Buffer(const SVFInstruction* call_inst, const SVFValue* buf, const BufferType& type)
-            : callinst(call_inst), buf(buf), type(type)
+        Buffer(const SVFInstruction* call_inst, const SVFValue* buf, const ICFGNode* node, const BufferType& type)
+            : callinst(call_inst), buf(buf), node(node), type(type)
         {
         }
     };

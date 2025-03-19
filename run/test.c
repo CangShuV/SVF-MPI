@@ -61,9 +61,14 @@ int main() {
             printf("%d ", recv_buffer[j]);
         }
 
+        if(i == 3)
+            return 0;
+
         for (int j = 0; j < 5; j++) {
-            ;
+            printf("%d ", recv_buffer[j]);;
         }
+
+        printf("%d ", recv_buffer[1]);
     }
 
     *p_send = 1;

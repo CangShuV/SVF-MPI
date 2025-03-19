@@ -158,9 +158,9 @@ void Monitor::recordLoopLastStmtPos(const SVFLoop* loop) {
 
         // 获取基本块的最后一条指令
         const SVFInstruction* inst = basicBlock->back();
-        // if (inst) {
+        if (!lastInst || parse(inst->getSourceLoc()).first > parse(lastInst->getSourceLoc()).first) {
             lastInst = inst; // 记录最新的最后一条指令
-        // }
+        }
     }
 
     // 处理空循环情况
@@ -338,7 +338,7 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
              */
 
             // 创建一个新的缓冲区并添加到 monitor
-            Buffer buffer(callinst, buf, bufferType);
+            Buffer buffer(callinst, buf, node, bufferType);
             monitor.buffers.push_back(buffer);
 
             for (auto i : monitor.buffers)
@@ -373,7 +373,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
 
                         // 查询最内层循环
-                        const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        const SVFLoop* loop = getInnermostSVFLoop(i.node);
                         monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), loop, i.type, LOAD);
                     }
                 }
@@ -390,7 +391,8 @@ void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
                         LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
 
                         // 查询最内层循环
-                        const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                        const SVFLoop* loop = getInnermostSVFLoop(i.node);
                         monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), loop, i.type, STORE);
                     }
                 }
