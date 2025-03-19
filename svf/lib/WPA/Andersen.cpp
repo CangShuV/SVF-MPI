@@ -177,7 +177,9 @@ void Monitor::recordLoopLastStmtPos(const SVFLoop* loop) {
             const SVFInstruction* terminator = basicBlock->getTerminator();
             if (terminator) {
                 auto [lines, file_name] = parse(terminator->getSourceLoc());
-                loopInfoLog[loop].insert({{lines, file_name, CIRCULATION_END}, MonitorLogData()});
+                for (auto &it: loopInfoLog[loop]){
+                    it.second.insert({lines, file_name, CIRCULATION_END});
+                }
                 return;
             }
         }
@@ -187,7 +189,9 @@ void Monitor::recordLoopLastStmtPos(const SVFLoop* loop) {
 
     // 返回最后一条有效语句的位置
     auto [lines, file_name] = parse(lastInst->getSourceLoc());
-    loopInfoLog[loop].insert({{lines, file_name, CIRCULATION_END}, MonitorLogData()});
+    for (auto &it: loopInfoLog[loop]){
+        it.second.insert({lines, file_name, CIRCULATION_END});
+    }
     return;
 }
 
@@ -204,7 +208,7 @@ void Monitor::parseRecord(std::string call, std::string access, const SVFLoop* l
         log[callLog].insert(accessLog);
         stmtLog.insert(accessLog);
 
-        loopInfoLog[loop_info].insert({accessLog, callLog});
+        loopInfoLog[loop_info][callLog].insert(accessLog);
         recordLoopLastStmtPos(loop_info);
     }
 }
@@ -460,13 +464,19 @@ void AndersenBase::ptsMatch()
     {
         LOG(INFO) << "[Loop]";
         LOG(INFO) << "loop: " << it.first;
-        LOG(INFO) << "[Accesses]";
+
         for (const auto& [jt, kt] : it.second)
         {
-            LOG(INFO) << "ln: " << jt.lines_index << "  fl: " << jt.file_name <<
-                "  Access type: " << stmtTypeToString(StmtType(jt.type)) <<
-                "  Access buffer: " << "ln: " << kt.lines_index << "  fl: " << kt.file_name <<
-                "  Buffer type: " << bufferTypeToString(BufferType(kt.type));
+            LOG(INFO) << "    [Buffer]";
+            LOG(INFO) << "    ln: " << jt.lines_index << "  fl: " << jt.file_name <<
+                "  Buffer type: " << bufferTypeToString(BufferType(jt.type));
+
+            LOG(INFO) << "        [Accesses]";
+            for (auto& lt : kt)
+            {
+                LOG(INFO) << "        ln: " << lt.lines_index << "  fl: " << lt.file_name <<
+                    "  Access type: " << stmtTypeToString(StmtType(lt.type));
+            }
         }
         LOG(INFO) << "[Loop END]";
     }

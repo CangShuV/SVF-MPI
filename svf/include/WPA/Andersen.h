@@ -124,7 +124,7 @@ namespace SVF
 
             // for test.
             MonitorLogData():
-                lines_index(0), file_name("null"), type(0)
+                lines_index(0), file_name("null"), type(UNKNOWN_BUFFER)
             {}
 
             MonitorLogData(int lines, std::string &fl_name, int type):
@@ -135,14 +135,13 @@ namespace SVF
         std::set<MonitorLogData> stmtLog;
 
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
-        // std::map<std::pair<int,std::string>, std::set<std::pair<int,std::string>>> log;
 
-        // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, {accessLog, bufferLog}>;
-        std::map<const SVFLoop*, std::set<std::pair<MonitorLogData, MonitorLogData>>> loopInfoLog;
+        // std::map<const SVFLoop*, std::map<Buffer, std::set<const SVFStmt*>>> loopInfo;
 
-        // void loopRecord(const SVFLoop* loop_info, std::string stmt_info,
-        //                 StmtType stmt_type = UNKNOWN
-        // );
+        // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, <bufferLog, {accessLogs}>>;
+        std::map<const SVFLoop*, std::map<MonitorLogData, std::set<MonitorLogData>>> loopInfoLog;
+
+        std::map<const SVFLoop*, std::pair<MonitorLogData, MonitorLogData>> insertPos;
 
         static std::pair<int, std::string> parse(std::string inst_info);
 

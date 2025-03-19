@@ -60,6 +60,10 @@ int main() {
         for (int j = 0; j < 5; j++) {
             printf("%d ", recv_buffer[j]);
         }
+
+        for (int j = 0; j < 5; j++) {
+            ;
+        }
     }
 
     *p_send = 1;
