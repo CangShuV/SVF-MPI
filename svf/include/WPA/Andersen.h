@@ -55,12 +55,14 @@ namespace SVF
 
     enum StmtType : int
     {
-        LOAD = 0,
-        STORE,
-        LOAD_AND_STORE,
-        CALL,
-        CIRCULATION_END,
-        UNKNOWN
+        LOAD_STMT = 0,
+        STORE_STMT,
+        LOAD_AND_STORE_STMT,
+        CALL_STMT,
+        CIRCULATION_END_STMT,
+        UNSAFE_BRANCH_STMT,
+        RETURN_STMT,
+        UNKNOWN_STMT
     };
 
 
@@ -80,12 +82,14 @@ namespace SVF
     {
         switch (type)
         {
-        case LOAD: return "Load";
-        case STORE: return "Store";
-        case LOAD_AND_STORE: return "Load & Store";
-        case CALL: return "Call";
-        case CIRCULATION_END: return "Circulation End";
-        case UNKNOWN: return "Unknown";
+        case LOAD_STMT: return "Load";
+        case STORE_STMT: return "Store";
+        case LOAD_AND_STORE_STMT: return "Load & Store";
+        case CALL_STMT: return "Call";
+        case CIRCULATION_END_STMT: return "Circulation End";
+        case UNSAFE_BRANCH_STMT: return "Unsafe Branch";
+        case RETURN_STMT: return "Return";
+        case UNKNOWN_STMT: return "Unknown";
         default: return "Invalid";
         }
     }
@@ -94,12 +98,17 @@ namespace SVF
     class Buffer
     {
     public:
-        const SVFInstruction* callinst;
+        const SVFInstruction* callInst;
         const SVFValue* buf;
         const ICFGNode* node;
         const BufferType type;
-        Buffer(const SVFInstruction* call_inst, const SVFValue* buf, const ICFGNode* node, const BufferType& type)
-            : callinst(call_inst), buf(buf), node(node), type(type)
+        const ICFGNode* loopEntryNode;
+        const ICFGNode* loopBackNode;
+
+        Buffer(const SVFInstruction* call_inst, const SVFValue* buf, const ICFGNode* node,
+               const BufferType& type, const ICFGNode* loopEntryNode = nullptr, const ICFGNode* loopBackNode = nullptr)
+            : callInst(call_inst), buf(buf), node(node), type(type), loopEntryNode(loopEntryNode),
+              loopBackNode(loopBackNode)
         {
         }
     };
@@ -135,23 +144,45 @@ namespace SVF
 
         std::set<MonitorLogData> stmtLog;
 
+        // enum LoopHandledTag : int
+        // {
+        //     UNHANDLED_LOOP = 0,
+        //     SAFE_LOOP,
+        //     UNSAFE_LOOP,
+        //     UNKNOWN_LOOP
+        // };
+
+        // final result. <buffer, unsafe_stmt>
+        std::map<Buffer*, std::set<std::pair<const SVFStmt*, StmtType>>> bufferAccess;
+
+        // final log.
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
 
-        // std::map<const SVFLoop*, std::map<Buffer, std::set<const SVFStmt*>>> loopInfo;
+        // <entry, back>
+        std::set<std::tuple<const ICFGNode*, const ICFGNode*>> loops;
 
-        // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, <bufferLog, {accessLogs}>>;
-        std::map<const SVFLoop*, std::map<MonitorLogData, std::set<MonitorLogData>>> loopInfoLog;
+        // inv of loops, included goto & return nodes. <back, entry, type>
+        std::set<std::tuple<const ICFGNode*, const ICFGNode*, StmtType>> backEdges;
 
-        std::map<const SVFLoop*, std::pair<MonitorLogData, MonitorLogData>> insertPos;
+
+        // [node], <loopEntryNode, loopBackNode>. If node doesn't in loop, will filled by nullptr.
+        std::map<const ICFGNode*, std::tuple<const ICFGNode*, const ICFGNode*>> nodeBelongLoop;
+
+
+        // <entry, back>. if not find, return {}
+        std::tuple<const ICFGNode*, const ICFGNode*> findNodeInLoops(const ICFGNode* node);
+
+        // inv of loops, included goto & return nodes. <back, entry, type>. if not find, return {}
+        std::tuple<const ICFGNode*, const ICFGNode*, StmtType>  findNodeInBackEdges(const ICFGNode* node);
+        // // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, <bufferLog, {accessLogs}>>;
+        // std::map<const SVFLoop*, std::map<MonitorLogData, std::set<MonitorLogData>>> loopInfoLog;
 
         static std::pair<int, std::string> parse(std::string inst_info);
 
-        void parseRecord(std::string call, std::string access, const SVFLoop* loop_info,
+        void parseRecord(std::string call, std::string access,
                          BufferType buf_type = UNKNOWN_BUFFER,
-                         StmtType stmt_type = UNKNOWN
+                         StmtType stmt_type = UNKNOWN_STMT
         );
-
-        void recordLoopLastStmtPos(const SVFLoop* loop);
     };
 
 class SVFModule;
@@ -166,13 +197,31 @@ class AndersenBase:  public WPAConstraintSolver, public BVDataPTAImpl
 public:
 
     // add by bz
-    void processNode(const ICFGNode* node, Monitor& monitor);
-    void traverseICFG(const ICFGNode* startNode, Monitor& monitor);
+    // void processNode(const ICFGNode* node, Monitor& monitor);
+    // Search loops, then do BFS.
+    void traverseICFG(Monitor& monitor);
     void ptsMatch();
 
     // add by zsz
-    const SVFLoop* getInnermostSVFLoop(const ICFGNode* node) const;
+    // input CallNode, return RetNode. if no CallSite, return nullptr.
+    const ICFGNode* findFuncRetNode(const ICFGNode* callNode);
+    // DFS.
+    void findICFGLoops(const ICFGNode* startNode, Monitor& monitor);
+    void findICFGBuffers(const ICFGNode* startNode, Monitor& monitor);
+    // Ignore goto. Keep searching until return to entry or find back.
+    // void traverseICFGLoopVer1(const ICFGNode* startNode, Monitor& monitor);
 
+    // Keep searching until return to entryNode or find backNode/goto/return.
+    // void traverseICFGLoopVer2(const ICFGNode* startNode, Monitor& monitor);
+
+    void detectBufferNodes(const ICFGNode* node, Monitor& monitor);
+    int detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buffer& buf);
+
+    const std::set<std::string> specialFunctions = {
+        "foo",         "MPI_Send",     "MPI_Recv",      "MPI_Bcast",
+        "MPI_Scatter", "MPI_Gather",   "MPI_Allgather", "MPI_Alltoall",
+        "MPI_Reduce",  "MPI_Allreduce"
+    };
 
     /// Constructor
     AndersenBase(SVFIR* _pag, PTATY type = Andersen_BASE, bool alias_check = true)

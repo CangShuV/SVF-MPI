@@ -76,8 +76,6 @@ int main() {
             }
         }
 
-//        if(i == 6) continue;
-
         for (int ii = 0; ii < 5; ii++) {
             for (int jj = 0; jj < 5; jj++) {  // 存疑：这个循环对应的ICFG是两条goto语句。也就是说，不存在指回循环开始的语句。具体解释请看附图。
                 goto returnbreakfor;
@@ -124,12 +122,6 @@ int main() {
         }
 
         MPI_Recv(recv_buffer, 5, sizeof(int), 0, 0, MPI_COMM_WORLD, NULL);
-
-        ignore = 2;
-        do{
-            --ignore;
-            MPI_Recv(recv_buffer, 5, sizeof(int), 0, 0, MPI_COMM_WORLD, NULL);
-        } while(ignore);
 
         for (int testi = 0; testi < 5; testi++) {
             for (int testj = 0; testj < 5; testj++) {

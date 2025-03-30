@@ -32,6 +32,9 @@
 #include "Util/SVFUtil.h"
 #include "MemoryModel/PointsTo.h"
 #include "WPA/Andersen.h"
+
+#include <queue>
+
 #include "WPA/Steensgaard.h"
 #include <glog/logging.h>
 
@@ -58,14 +61,6 @@ u32_t AndersenBase::MaxPointsToSetSize = 0;
 double AndersenBase::timeOfProcessCopyGep = 0;
 double AndersenBase::timeOfProcessLoadStore = 0;
 double AndersenBase::timeOfUpdateCallGraph = 0;
-
-// 在ICFG类中添加方法获取最内层循环（假设列表顺序为外层到内层）
-const SVFLoop* AndersenBase::getInnermostSVFLoop(const ICFGNode* node) const {
-    auto loopVec = pag->getICFG()->getIcfgNodeToSVFLoopVec();
-    auto it = loopVec.find(node);
-    return (it != loopVec.end() && !it->second.empty()) ?
-           it->second.back() : nullptr;
-}
 
 std::pair<int, std::string> Monitor::parse(std::string inst_info)
 {
@@ -115,7 +110,6 @@ std::pair<int, std::string> Monitor::parse(std::string inst_info)
                 return str.substr(pos, endPos - pos);
             }
         }
-
         return ""; // 如果格式不正确，返回空字符串
     };
 
@@ -138,79 +132,34 @@ std::pair<int, std::string> Monitor::parse(std::string inst_info)
     return make_pair(instLnValue, instFlValue);
 }
 
-void Monitor::recordLoopLastStmtPos(const SVFLoop* loop) {
-    if (!loop) {
-        LOG(WARNING) << "Invalid loop!";
-        return;
-    }
-
-    const SVFInstruction* lastInst = nullptr;
-
-    // 遍历循环中的所有 ICFGNode
-    for (auto it = const_cast<SVFLoop*>(loop)->ICFGNodesBegin(); it != const_cast<SVFLoop*>(loop)->ICFGNodesEnd(); ++it) {
-        const ICFGNode* icfgNode = *it;
-        const auto* intraNode = dynamic_cast<const IntraICFGNode*>(icfgNode);
-        if (!intraNode) continue;
-
-        // 获取该 ICFGNode 对应的 SVFBasicBlock
-        const SVFBasicBlock* basicBlock = intraNode->getBB();
-        if (!basicBlock) continue;
-
-        // 获取基本块的最后一条指令
-        const SVFInstruction* inst = basicBlock->back();
-        if (!lastInst || parse(inst->getSourceLoc()).first > parse(lastInst->getSourceLoc()).first) {
-            lastInst = inst; // 记录最新的最后一条指令
-        }
-    }
-
-    // 处理空循环情况
-    if (!lastInst) {
-        // 可能是空循环，获取其终止指令
-        for (auto it = const_cast<SVFLoop*>(loop)->ICFGNodesBegin(); it != const_cast<SVFLoop*>(loop)->ICFGNodesEnd(); ++it) {
-            const ICFGNode* icfgNode = *it;
-            const auto* intraNode = dynamic_cast<const IntraICFGNode*>(icfgNode);
-            if (!intraNode) continue;
-
-            const SVFBasicBlock* basicBlock = intraNode->getBB();
-            if (!basicBlock) continue;
-
-            const SVFInstruction* terminator = basicBlock->getTerminator();
-            if (terminator) {
-                auto [lines, file_name] = parse(terminator->getSourceLoc());
-                for (auto &it: loopInfoLog[loop]){
-                    it.second.insert({lines, file_name, CIRCULATION_END});
-                }
-                return;
-            }
-        }
-        LOG(WARNING) << "Unknown Source Location!"; // 仍然无法找到，返回未知位置
-        return;
-    }
-
-    // 返回最后一条有效语句的位置
-    auto [lines, file_name] = parse(lastInst->getSourceLoc());
-    for (auto &it: loopInfoLog[loop]){
-        it.second.insert({lines, file_name, CIRCULATION_END});
-    }
-    return;
-}
-
-void Monitor::parseRecord(std::string call, std::string access, const SVFLoop* loop_info, SVF::BufferType buf_type,
-                          SVF::StmtType stmt_type)
+void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType buf_type, SVF::StmtType stmt_type)
 {
     auto[callLnValue, callFlValue] = parse(call);
     auto[accessLnValue, accessFlValue] = parse(access);
 
     if(accessLnValue > 0  && callLnValue > 0)
     {
-        MonitorLogData callLog = {callLnValue, callFlValue, int(buf_type)};
-        MonitorLogData accessLog = {accessLnValue, accessFlValue, int(stmt_type)};
+        MonitorLogData callLog = {callLnValue, callFlValue, static_cast<int>(buf_type)};
+        MonitorLogData accessLog = {accessLnValue, accessFlValue, static_cast<int>(stmt_type)};
         log[callLog].insert(accessLog);
-        stmtLog.insert(accessLog);
-
-        loopInfoLog[loop_info][callLog].insert(accessLog);
-        recordLoopLastStmtPos(loop_info);
+        // stmtLog.insert(accessLog);
     }
+}
+
+std::tuple<const ICFGNode*, const ICFGNode*> Monitor::findNodeInLoops(const ICFGNode* node)
+{
+    auto loopsSearch = loops.lower_bound({node, nullptr});
+    if (loopsSearch != loops.end() && std::get<0>(*loopsSearch) == node)
+        return *loopsSearch;
+    return {};
+}
+
+std::tuple<const ICFGNode*, const ICFGNode*, StmtType> Monitor::findNodeInBackEdges(const ICFGNode* node)
+{
+    auto backEdgesSearch = backEdges.lower_bound({node, nullptr, static_cast<StmtType>(0)});
+    if (backEdgesSearch != backEdges.end() && std::get<0>(*backEdgesSearch) == node)
+        return *backEdgesSearch;
+    return {};
 }
 
 /*!
@@ -282,135 +231,524 @@ void AndersenBase::solveConstraints()
     DBOUT(DGENERAL, outs() << SVFUtil::pasMsg("Finish Solving Constraints\n"));
 }
 
-void AndersenBase::processNode(const ICFGNode* node, Monitor& monitor) {
+// void AndersenBase::traverseICFGLoopVer2(const ICFGNode* startNode, Monitor& monitor)
+// {
+//
+// }
 
-    set<string> specialFunctions = {
-        "foo",         "MPI_Send",     "MPI_Recv",      "MPI_Bcast",
-        "MPI_Scatter", "MPI_Gather",   "MPI_Allgather", "MPI_Alltoall",
-        "MPI_Reduce",  "MPI_Allreduce"};
+int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buffer& buf)
+{
+    // auto entryNodeSearch = monitor.loops.lower_bound({node, nullptr});
+    // if (entryNodeSearch != monitor.loops.end() && entryNodeSearch->first == node)
+    // {
+    //     traverseICFGLoopVer2(node, monitor);
+    //     return;
+    // }
 
+    // if node is backNode (include goto/return).
+    auto backNodeSearch = monitor.findNodeInBackEdges(node);
+    if (std::get<0>(backNodeSearch))
+    {
+        auto& [back, entry, type] = backNodeSearch;
+        if (type == RETURN_STMT || type == UNSAFE_BRANCH_STMT)
+        {
+            monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), type});
+            return -1;
+        }
+
+        if (type == CIRCULATION_END_STMT)
+        {
+            // Make sure that this BackNode is buffer's loopBackNode.
+            auto belongLoopBackNode = std::get<1>(monitor.nodeBelongLoop[buf.node]);
+
+            // LOG(INFO) << buf.loopEntryNode;
+            if (belongLoopBackNode == node)
+            {
+                monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), CIRCULATION_END_STMT});
+                return -2;
+            }
+
+            // [deprecated]
+            // LOG(FATAL) << "[detectAccessNodes] find circulation end, but it is not belong to this buffer!!\n" << buf.node->getId();
+            // otherwise, keep processing.
+        }
+        else LOG(WARNING) << "[detectAccessNodes] Unknown backNode type!";
+    }
+
+    if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
+    {
+        auto stmts = intraNode->getSVFStmts();
+        for (auto stmt : stmts)
+        {
+            if (auto* loadStmt = dyn_cast<LoadStmt>(stmt))
+            {
+                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
+                if (alias(buf.buf, loadStmt->getRHSVar()->getValue()))
+                {
+                    // LOG(INFO) << "trigger!";
+                    // LOG(INFO) <<buf.callInst->getSourceLoc();
+                    // LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
+                    monitor.bufferAccess[&buf].insert({stmt, LOAD_STMT});
+                }
+            }
+            else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt))
+            {
+                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
+                if (alias(buf.buf, storeStmt->getLHSVar()->getValue()))
+                {
+                    // LOG(INFO) << "trigger!";
+                    // LOG(INFO) <<buf.callInst->getSourceLoc();
+                    // LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
+
+                    // 查询最内层循环
+                    // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
+                    monitor.bufferAccess[&buf].insert({stmt, STORE_STMT});
+                }
+            }
+        }
+        return 1;
+    }
+
+    if (auto *callNode = dyn_cast<CallICFGNode>(node))
+    {
+        // 获取调用的函数
+        auto *callInst = callNode->getCallSite();
+        auto callSite = getSVFCallSite(callInst);
+
+        // 检查是否是 MPI 相关函数
+        if (specialFunctions.count(callSite.getCalledFunction()->getName()))
+        {
+            StmtType stmtType;
+            auto &calledFunctionName = callSite.getCalledFunction()->getName();
+            if (calledFunctionName == "MPI_Send") {
+                stmtType = LOAD_STMT;
+            } else if (calledFunctionName == "MPI_Recv") {
+                stmtType = STORE_STMT;
+            } else if (calledFunctionName == "MPI_Bcast") {
+                stmtType = LOAD_AND_STORE_STMT;
+            } else {
+                stmtType = UNKNOWN_STMT;
+            }
+
+            auto bufArg0 = callSite.getArgument(0); // 获取第一个缓冲区参数
+
+            // buf.node != node: omit itself.
+            if (buf.node != node && alias(buf.buf, bufArg0))
+            {
+                //         // LOG(INFO) << "trigger!";
+                //         // LOG(INFO) << i.buf->getSourceLoc();
+                //         // LOG(INFO) << callinst->getSourceLoc();
+                monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), stmtType});
+            }
+
+            return 2;
+        }
+    }
+    return 0;
+}
+
+void AndersenBase::detectBufferNodes(const ICFGNode* node, Monitor& monitor)
+{
     // LOG(INFO) << node->toString();
     // 判断是否是函数调用节点
     if (auto *callNode = dyn_cast<CallICFGNode>(node)) {
         // 获取调用的函数
-        auto *callinst = callNode->getCallSite();
-        auto callsite = getSVFCallSite(callinst);
+        auto *callInst = callNode->getCallSite();
+        auto callSite = getSVFCallSite(callInst);
 
         // 检查是否是 MPI 相关函数
-        if (specialFunctions.count(callsite.getCalledFunction()->getName())) {
-            auto buf = callsite.getArgument(0); // 获取第一个缓冲区参数
-
-            /*
-             * TODO:Some mpi_comm_call have two buffers(ie Bcast)
-             *      and buffer pointer ArgNo is different in calls.
-             */
+        if (specialFunctions.count(callSite.getCalledFunction()->getName())) {
+            // TODO: 有些函数有多个缓冲区参数。这里只用了第一个。
+            auto buf = callSite.getArgument(0); // 获取第一个缓冲区参数
 
             /*
              * 根据函数名判断是发送缓冲区还是接收缓冲区
              * 对应的函数通常会有一个输入参数，用于区分是发送还是接收
              */
             BufferType bufferType;
-            StmtType stmtType;
-            auto &calledFunctionName = callsite.getCalledFunction()->getName();
+            auto &calledFunctionName = callSite.getCalledFunction()->getName();
             if (calledFunctionName == "MPI_Send") {
                 bufferType = SEND_BUFFER;
-                stmtType = LOAD;
             } else if (calledFunctionName == "MPI_Recv") {
                 bufferType = RECV_BUFFER;
-                stmtType = STORE;
             } else if (calledFunctionName == "MPI_Bcast") {
                 bufferType = SEND_AND_RECV_BUFFER;
-                stmtType = LOAD_AND_STORE;
             } else {
                 bufferType = UNKNOWN_BUFFER;
-                stmtType = UNKNOWN;
             }
-
-            /*
-             * TODO:Add another buffers in monitor, one for send_buffer
-             *      another for recv_buffer. Check different buffer when
-             *      handle load/store instruction.
-             */
 
             /*
              * 根据缓冲区类型添加到 monitor 中
              * send_buffer 和 recv_buffer 会有不同的处理方式
              */
 
+            // for (auto i : monitor.buffers)
+            // {
+            //     if (alias(i.buf, buf))
+            //     {
+            //         // LOG(INFO) << "trigger!";
+            //         // LOG(INFO) << i.buf->getSourceLoc();
+            //         // LOG(INFO) << callinst->getSourceLoc();
+            //
+            //         // 查询最内层循环
+            //         const SVFLoop* loop = getInnermostSVFLoop(callNode);
+            //         monitor.parseRecord(i.buf->getSourceLoc(), callInst->getSourceLoc(), loop, bufferType, stmtType);
+            //     }
+            // }
+
             // 创建一个新的缓冲区并添加到 monitor
-            Buffer buffer(callinst, buf, node, bufferType);
+            Buffer buffer(callInst, buf, node, bufferType);
             monitor.buffers.push_back(buffer);
-
-            for (auto i : monitor.buffers)
-            {
-                if (alias(i.buf, buf))
-                {
-                    LOG(INFO) << "trigger!";
-                    LOG(INFO) << i.buf->getSourceLoc();
-                    LOG(INFO) << callinst->getSourceLoc();
-
-                    // 查询最内层循环
-                    const SVFLoop* loop = getInnermostSVFLoop(callNode);
-                    monitor.parseRecord(i.buf->getSourceLoc(), callinst->getSourceLoc(), loop, bufferType, stmtType);
-                }
-            }
-        }
-    }
-    else if(auto* intraNode = dyn_cast<IntraICFGNode>(node))
-    {
-        auto stmts = intraNode->getSVFStmts();
-        for(auto stmt : stmts)
-        {
-            if (auto* loadStmt = dyn_cast<LoadStmt>(stmt)) {
-                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
-
-                for(auto i : monitor.buffers)
-                {
-                    if(alias(i.buf, loadStmt->getRHSVar()->getValue()))
-                    {
-                        LOG(INFO) << "trigger!";
-                        LOG(INFO) <<i.callinst->getSourceLoc();
-                        LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
-
-                        // 查询最内层循环
-                        // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
-                        const SVFLoop* loop = getInnermostSVFLoop(i.node);
-                        monitor.parseRecord(i.callinst->getSourceLoc(), loadStmt->getInst()->getSourceLoc(), loop, i.type, LOAD);
-                    }
-                }
-            }
-            else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt)) {
-                // monitor.stmts.push_back(stmt);  // 将相关指令添加到 stmts 中
-
-                for(auto i : monitor.buffers)
-                {
-                    if(alias(i.buf, storeStmt->getLHSVar()->getValue()))
-                    {
-                        LOG(INFO) << "trigger!";
-                        LOG(INFO) <<i.callinst->getSourceLoc();
-                        LOG(INFO) <<storeStmt->getInst()->getSourceLoc();
-
-                        // 查询最内层循环
-                        // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
-                        const SVFLoop* loop = getInnermostSVFLoop(i.node);
-                        monitor.parseRecord(i.callinst->getSourceLoc(), storeStmt->getInst()->getSourceLoc(), loop, i.type, STORE);
-                    }
-                }
-            }
+            LOG(INFO) << "trigger!";
         }
     }
 }
 
-void AndersenBase::traverseICFG(const ICFGNode* startNode, Monitor& monitor) {
-    std::set<const ICFGNode*> visited;
-    std::stack<const ICFGNode*> stack;
-    stack.push(startNode);
+const ICFGNode* AndersenBase::findFuncRetNode(const ICFGNode* call_node)
+{
+    auto *callNode = dyn_cast<CallICFGNode>(call_node);
+    if (!callNode)
+    {
+        // LOG(FATAL) << "[findFuncRetNode] " << callNode << " is not CallNode!!";
+        return nullptr;
+    }
 
-    while (!stack.empty()) {
+    auto retNode = callNode->getRetICFGNode();
+    return retNode;
+
+    // auto* callInst = callNode->getCallSite();
+    // auto callSite = getSVFCallSite(callInst);
+    //
+    // if (!callInst)
+    //     return nullptr;
+    //
+    // // 目标函数的退出节点
+    // const FunExitICFGNode *exitNode = icfg->getFunExitICFGNode(callNode->getFun());
+    //
+    // // 返回位置（RetICFGNode）
+    // for (const auto& edge : exitNode->getOutEdges())
+    // {
+    //     auto* retNode = dyn_cast<RetICFGNode>(edge->getDstNode());
+    //     if (getSVFCallSite(retNode->getCallSite()) == callSite)
+    //     {
+    //         return retNode;
+    //     }
+    // }
+    // return nullptr;
+}
+
+void AndersenBase::findICFGLoops(const ICFGNode* globalNode, Monitor& monitor)
+{
+    // LOG(INFO) << "[trigger!]";
+    std::unordered_set<const ICFGNode*> visited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+    stack.push(globalNode);
+
+    while (!stack.empty())
+    {
         const ICFGNode* currentNode = stack.top();
         stack.pop();
 
-        if (visited.find(currentNode) != visited.end()) {
+        // if (visited.find(currentNode) != visited.end())
+
+        // // skip specialFunctions loops.
+        // if (specialFunctions.count(currentNode->getFun()->getName()))
+        //     continue;
+
+        LOG(INFO) << currentNode->getId();
+
+        // int handleTag = 0;
+        ICFGNode* lastNode = nullptr;
+        for (auto edge : currentNode->getInEdges())
+        {
+            // TODO: Used string.find() to discriminating statement. Should be changed to type conversion.
+            lastNode = edge->getSrcNode();
+            // except FuncNode. (Call, Ret, Exit)
+            if (lastNode->getSVFStmts().empty())
+                continue;
+
+            const string& lastStmtStr = lastNode->getSVFStmts().back()->toString();
+            // if (lastStmtStr.find("br label %") && lastStmtStr.find("label %if.") == std::string::npos && lastStmtStr.find("label %sw.") == std::string::npos)
+            if (lastStmtStr.find("!llvm.loop") != std::string::npos)
+            {
+                // if (handleTag == 1)
+                // {
+                //     LOG(FATAL) << "[findICFGLoops, loopsRecorder] currentNode has more than one loop backEdge!!\n"
+                //         << "[currentNodeID] " << currentNode->getId();
+                // }
+                // handleTag = 1;
+                // check do-while stmt.
+                if (auto* intraEdge = dyn_cast<IntraCFGEdge>(edge))
+                    if (intraEdge->getCondition())
+                        if (!intraEdge->getSuccessorCondValue())
+                            goto nextCase;
+
+                LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString()
+                          << "\n[TYPE]\n" << stmtTypeToString(CIRCULATION_END_STMT);
+                monitor.loops.insert({currentNode, lastNode});
+                monitor.backEdges.insert({lastNode, currentNode, CIRCULATION_END_STMT});
+            nextCase:;
+            }
+            // record return edge.
+            if (lastStmtStr.find("br label %return,") != std::string::npos)
+            {
+                // handleTag = 2;
+                LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString()
+                          << "\n[TYPE]\n" << stmtTypeToString(RETURN_STMT);
+                monitor.backEdges.insert({lastNode, currentNode, RETURN_STMT});
+            }
+            // record goto/break/return edge.
+            if (lastStmtStr.find("br label %") != std::string::npos &&
+                lastStmtStr.find("label %if.") == std::string::npos &&
+                lastStmtStr.find("label %sw.") == std::string::npos &&
+               // (lastStmtStr.find(".end") != std::string::npos || // break.
+               (lastStmtStr.find("label %for.") == std::string::npos &&
+                lastStmtStr.find("label %while.") == std::string::npos &&
+                lastStmtStr.find("label %do.") == std::string::npos))
+            {
+                // if (!handleTag)
+                //     handleTag = 3;
+                LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString()
+                          << "\n[TYPE]\n" << stmtTypeToString(UNSAFE_BRANCH_STMT);
+                monitor.backEdges.insert({lastNode, currentNode, UNSAFE_BRANCH_STMT});
+            }
+        }
+
+        // if (handleTag == 1)
+        // {
+        //     LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString();
+        //     monitor.loops.insert({currentNode, lastNode});
+        //     monitor.backEdges.insert({lastNode, currentNode, CIRCULATION_END_STMT});
+        // }
+        // else if (handleTag == 2)
+        // {
+        //     LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString();
+        //     monitor.backEdges.insert({lastNode, currentNode, RETURN_STMT});
+        // }
+        // else if (handleTag == 3)
+        // {
+        //     LOG(INFO) << "[PATH]\n[FROM]\n" << lastNode->toString() << "\n[TO]\n" << currentNode->toString();
+        //     monitor.backEdges.insert({lastNode, currentNode, UNSAFE_BRANCH_STMT});
+        // }
+
+        if (visited.find(currentNode) != visited.end())
+            continue; // 已经访问过，跳过
+
+        visited.insert(currentNode);
+
+        // LOG(INFO) << "[PATH]" << currentNode->toString();
+
+        // 遍历所有出边
+        std::vector<ICFGEdge*> trueEdges, falseEdges;
+        for (auto edge : currentNode->getOutEdges())
+        {
+            if (auto* intraEdge = dyn_cast<IntraCFGEdge>(edge))
+            {
+                if (intraEdge->getCondition())
+                {
+                    (intraEdge->getSuccessorCondValue() ? falseEdges : trueEdges).push_back(intraEdge);
+                }
+                else
+                    falseEdges.push_back(intraEdge);
+            }
+            else
+                falseEdges.push_back(edge);
+        }
+
+        // 优先处理真边（循环体）
+        for (const auto& edge : trueEdges) {
+            stack.push(edge->getDstNode());
+        }
+        // 再处理假边（退出分支）
+        for (const auto& edge : falseEdges) {
+            stack.push(edge->getDstNode());
+        }
+
+        // LOG(INFO) << trueEdges.size() << ' ' << falseEdges.size();
+    }
+
+    // 2nd DFS, find all nodes belongs loop.
+    visited.clear();
+    while (!stack.empty()) stack.pop();
+
+    std::unordered_set<const ICFGNode*> specialGotoVisited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> gotoStack;
+
+    // Prepare a Loop stack for each function
+    std::map<std::string, std::stack<const ICFGNode*, std::vector<const ICFGNode*>>> loopStack;
+
+    stack.push(globalNode);
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+        if (stack.empty() && !gotoStack.empty())
+        {
+            stack.push(gotoStack.top());
+            // specialGotoVisited.insert(currentNode);
+            gotoStack.pop();
+        }
+
+        LOG(INFO) << "[PATH]" << currentNode->getId();
+
+        if (dyn_cast<FunExitICFGNode>(currentNode))
+            continue;
+
+        // only allow last inEdge to search. design for if, switch, etc.
+        if (!dyn_cast<RetICFGNode>(currentNode))
+        {
+            int continueTag = 0;
+            for (auto inEdge : currentNode->getInEdges())
+            {
+                auto srcNode = inEdge->getSrcNode();
+                // not visited && not backEdge && not callNode
+                if (
+                    visited.find(srcNode) == visited.end() &&
+                    !get<0>(monitor.findNodeInBackEdges(srcNode)) &&
+                    !dyn_cast<CallICFGNode>(srcNode)
+                )
+                {
+                    LOG(INFO) << currentNode->getId() << " [skipped] " << srcNode->getId();
+                    continueTag = 1;
+                }
+            }
+            if (continueTag) continue;
+        }
+
+        if (visited.find(currentNode) != visited.end())
+        {
+            LOG(WARNING) << "[findICFGBuffers] Repeated access node!\n" << currentNode->toString();
+            continue; // 已经访问过，跳过
+        }
+        visited.insert(currentNode);
+
+        // 处理当前节点
+        // avoid globalNode.
+        if (const auto currentFunc = currentNode->getFun())
+        {
+            const auto& funcName = currentFunc->getName();
+            if (!specialFunctions.count(funcName))
+            {
+                // LOG(INFO) << "trigger!";
+                // if it is entryNode, push
+                if (get<0>(monitor.findNodeInLoops(currentNode)))
+                {
+                    loopStack[funcName].push(currentNode);
+                }
+
+                monitor.nodeBelongLoop[currentNode] = {
+                    monitor.findNodeInLoops(loopStack[funcName].empty() ? nullptr : loopStack[funcName].top())
+                };
+                LOG(INFO) << "[nodeBelongLoop, 2nd dfs.] " << currentNode->getId() << " [belong] " << (loopStack[funcName].empty() ? 0 : loopStack[funcName].top()->getId());
+
+                // if it is backNode, pop
+                if (get<2>(monitor.findNodeInBackEdges(currentNode)) == CIRCULATION_END_STMT)
+                {
+                    if (loopStack[funcName].empty())
+                        LOG(FATAL) << "[findICFGLoops, 2nd dfs] loopStack[" << funcName << "] try to pop, but it's empty!!\n"
+                                   << "[Node] " << currentNode->getId();
+                    if (auto entryPartner = get<1>(monitor.findNodeInBackEdges(currentNode)); entryPartner != loopStack[funcName].top())
+                        LOG(FATAL) << "[findICFGLoops, 2nd dfs] loopStack[" << funcName << "] try to pop, but it's not currentNode's EntryNode!\n"
+                                   << "[<CurrentNode, EntryNode>] " << entryPartner->getId() << " " << loopStack[funcName].top()->getId();
+                    loopStack[funcName].pop();
+                }
+            }
+        }
+
+        // traverse all outEdges. except goto stmt. Allow last goto node inEdge to search, to avoid special goto node.
+        // But, push it must after searched all the points in current stack.
+        if (get<2>(monitor.findNodeInBackEdges(currentNode)) == UNSAFE_BRANCH_STMT)
+        {
+            LOG(INFO) << "[findLastGoto] " << currentNode->getId();
+            // int cnt = 0;
+            // assert(currentNode->getOutEdges().size() == 1);
+            // auto dstNode = (*currentNode->getOutEdges().begin())->getDstNode();
+            // for (auto inEdge : dstNode->getInEdges())
+            //     if (visited.find(inEdge->getSrcNode()) == visited.end())
+            //         ++cnt;
+            //
+            // // not last node.
+            // if (cnt)
+            // {
+            //     continue;
+            // }
+            // if (specialGotoVisited.find(currentNode) == specialGotoVisited.end())
+            // {
+            // only push goto_dstNode once.
+            assert(currentNode->getOutEdges().size() == 1);
+            auto dstNode = (*currentNode->getOutEdges().begin())->getDstNode();
+            // for (auto inEdge : dstNode->getInEdges())
+            if (specialGotoVisited.find(dstNode) == specialGotoVisited.end())
+            {
+                specialGotoVisited.insert(dstNode);
+                gotoStack.push(dstNode);
+                LOG(INFO) << "[findLastGotoDstNode:FOUND!] " << dstNode->getId();
+
+                if (stack.empty() && !gotoStack.empty())
+                {
+                    stack.push(gotoStack.top());
+                    // specialGotoVisited.insert(currentNode);
+                    gotoStack.pop();
+                }
+            }
+            continue;
+            // }
+        }
+
+        std::vector<ICFGEdge*> trueEdges, falseEdges;
+        for (auto edge : currentNode->getOutEdges())
+        {
+            if (auto* intraEdge = dyn_cast<IntraCFGEdge>(edge))
+            {
+                if (intraEdge->getCondition())
+                {
+                    (intraEdge->getSuccessorCondValue() ? falseEdges : trueEdges).push_back(intraEdge);
+                }
+                else
+                    falseEdges.push_back(intraEdge);
+            }
+            else
+                falseEdges.push_back(edge);
+        }
+
+        // 优先处理真边（循环体）
+        for (const auto& edge : trueEdges)
+        {
+            stack.push(edge->getDstNode());
+        }
+        // 再处理假边（退出分支）
+        for (const auto& edge : falseEdges)
+        {
+            stack.push(edge->getDstNode());
+        }
+
+
+        if (auto retNode = findFuncRetNode(currentNode))
+        {
+            stack.push(retNode);
+        }
+
+    }
+
+    LOG(INFO) << "[findICFGLoops END]";
+}
+
+void AndersenBase::findICFGBuffers(const ICFGNode* globalNode, Monitor& monitor)
+{
+    std::unordered_set<const ICFGNode*> visited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+
+    stack.push(globalNode);
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        if (visited.find(currentNode) != visited.end())
+        {
+            // LOG(INFO) << "[findICFGBuffers] Repeated access node!\n" << currentNode->toString();
             continue; // 已经访问过，跳过
         }
         visited.insert(currentNode);
@@ -418,13 +756,152 @@ void AndersenBase::traverseICFG(const ICFGNode* startNode, Monitor& monitor) {
         // LOG(INFO) << "[PATH]" << currentNode->toString();
 
         // 处理当前节点
-        processNode(currentNode, monitor);
-
+        detectBufferNodes(currentNode, monitor);
 
         // 遍历所有出边
-        for (auto edge : currentNode->getOutEdges()) {
+        for (auto edge : currentNode->getOutEdges())
+        {
             ICFGNode* nextNode = edge->getDstNode();
             stack.push(nextNode);
+        }
+    }
+
+    // [deprecated] pre-process buffers circulation_end
+    // for (auto& buf: monitor.buffers)
+    // {
+    //     auto &[entryNode, backNode] = monitor.nodeBelongLoop[buf.node];
+    //     buf.loopEntryNode = entryNode;
+    //     buf.loopBackNode = backNode;
+    //     if (backNode)
+    //     {
+    //         LOG(INFO) << "[findICFGBuffers] trigger! \n[buf.node] " << buf.node->getId() << "\n[backNode] " << backNode->getId();
+    //         monitor.bufferAccess[&buf].insert({backNode->getSVFStmts().back(), CIRCULATION_END_STMT});
+    //     }
+    // }
+
+
+    // [2nd dfs, deprecated] can not solving function multi-call
+    // for (auto& buf : monitor.buffers)
+    // {
+    //     visited.clear();
+    //     while (!stack.empty()) stack.pop();
+    //
+    //     for (auto edge : buf.node->getInEdges())
+    //     {
+    //         ICFGNode* frontNode = edge->getSrcNode();
+    //         stack.push(frontNode);
+    //     }
+    //
+    //     while (!stack.empty())
+    //     {
+    //         const ICFGNode* currentNode = stack.top();
+    //         stack.pop();
+    //
+    //         if (visited.find(currentNode) != visited.end())
+    //         {
+    //             // LOG(INFO) << "[findICFGBuffers] Repeated access node!\n" << currentNode->toString();
+    //             continue; // 已经访问过，跳过
+    //         }
+    //         visited.insert(currentNode);
+    //
+    //         // LOG(INFO) << "[PATH]" << currentNode->toString();
+    //
+    //         // if it is loopEntryNode
+    //         if (get<0>(monitor.findNodeInLoops(currentNode)))
+    //         {
+    //             if (buf.loopEntryNode)
+    //             {
+    //                 LOG(FATAL) << "[findICFGBuffers, 2nd DFS] buf.loopEntryNode already exist!!\n[buf.loopEntryNode] "
+    //                     << buf.loopEntryNode->getId() << "\n[currentNode] " << currentNode->getId() << "\n[buf.node] "
+    //                     << buf.node->getId();
+    //             }
+    //             // LOG(INFO) << "[findICFGBuffers]";
+    //             buf.loopEntryNode = currentNode;
+    //         }
+    //         else
+    //         {
+    //             // traverse all inEdges, retrace.
+    //             for (auto edge : currentNode->getInEdges())
+    //             {
+    //                 ICFGNode* nextNode = edge->getSrcNode();
+    //                 stack.push(nextNode);
+    //             }
+    //         }
+    //     }
+    // }
+}
+
+void AndersenBase::traverseICFG(Monitor& monitor)
+{
+    for (auto& buf : monitor.buffers)
+    {
+        std::unordered_set<const ICFGNode*> visited;
+        std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+
+        // starting search with buffer.node.RetNode
+        for (auto edge : findFuncRetNode(buf.node)->getOutEdges())
+        {
+            ICFGNode* nextNode = edge->getDstNode();
+            stack.push(nextNode);
+        }
+
+        LOG(INFO) << "[TEST] " << stack.size();
+
+        while (!stack.empty())
+        {
+            const ICFGNode* currentNode = stack.top();
+            stack.pop();
+
+            if (visited.find(currentNode) != visited.end())
+            {
+                // LOG(WARNING) << "[traverseICFG] Repeated access node!\n" << currentNode->toString();
+                continue; // 已经访问过，跳过
+            }
+            visited.insert(currentNode);
+
+            // LOG(INFO) << "[PATH]" << currentNode->toString();
+
+            int processResult = -1;
+
+            // 处理当前节点
+            // Do not search for special function nodes.
+            if (!specialFunctions.count(currentNode->getFun()->getName()))
+                processResult = detectAccessNodes(currentNode, monitor, buf);
+
+            // 遍历所有出边
+            // omit -1 & -2, unsafe br stmts.
+            if (processResult >= 0)
+            {
+                std::vector<ICFGEdge*> trueEdges, falseEdges;
+                for (auto edge : currentNode->getOutEdges())
+                {
+                    if (auto* intraEdge = dyn_cast<IntraCFGEdge>(edge))
+                    {
+                        if (intraEdge->getCondition())
+                        {
+                            (intraEdge->getSuccessorCondValue() ? falseEdges : trueEdges).push_back(intraEdge);
+                        }
+                        else
+                            falseEdges.push_back(intraEdge);
+                    }
+                    else
+                        falseEdges.push_back(edge);
+                }
+
+                // 优先处理真边（循环体）
+                for (const auto& edge : trueEdges) {
+                    stack.push(edge->getDstNode());
+                }
+                // 再处理假边（退出分支）
+                for (const auto& edge : falseEdges) {
+                    stack.push(edge->getDstNode());
+                }
+            }
+
+            if (auto retNode = findFuncRetNode(currentNode))
+            {
+                stack.push(retNode);
+            }
         }
     }
 }
@@ -435,11 +912,17 @@ void AndersenBase::ptsMatch()
     Monitor monitor;
     auto *node = pag->getICFG()->getGlobalICFGNode();
 
-    /*
-     * TODO:Traverse once first to monitor all buffers in program
-     */
-    traverseICFG(node, monitor);
+    findICFGLoops(node, monitor);
+    findICFGBuffers(node, monitor);
 
+    traverseICFG(monitor);
+
+    for (auto [buf, stmtSet] : monitor.bufferAccess)
+    {
+        for (auto [stmt, stmtType] : stmtSet)
+            monitor.parseRecord(buf->callInst->getSourceLoc(), stmt->getInst()->getSourceLoc(),
+                                buf->type, stmtType);
+    }
 
     /*
      * TODO:Add another traverse to check if load/store/call(noted that
@@ -448,41 +931,18 @@ void AndersenBase::ptsMatch()
      */
 
     // print all logs in monitor
-    for(const auto& it : monitor.log)
+    for(const auto& [bufLog, stmtLogSet] : monitor.log)
     {
-        LOG(INFO) << "[Call]";
-        LOG(INFO) << "ln: " << it.first.lines_index << "  fl: " << it.first.file_name <<
-            "  Buffer type: " << bufferTypeToString(BufferType(it.first.type));
-        LOG(INFO) << "[Accesses]";
-        for (const auto& jt : it.second)
+        LOG(INFO) << "[Buffer]";
+        LOG(INFO) << "ln: " << bufLog.lines_index << "  fl: " << bufLog.file_name <<
+                     "  Buffer type: " << bufferTypeToString(BufferType(bufLog.type));
+        LOG(INFO) << "    [Accesses]";
+        for (const auto& stmtLog : stmtLogSet)
         {
-            LOG(INFO) << "ln: " << jt.lines_index << "  fl: " << jt.file_name <<
-                "  Access type: " << stmtTypeToString(StmtType(jt.type));
+            LOG(INFO) << "    ln: " << stmtLog.lines_index << "  fl: " << stmtLog.file_name <<
+                         "  Access type: " << stmtTypeToString(StmtType(stmtLog.type));
         }
-        LOG(INFO) << "[Call END]";
     }
-
-    for(const auto& it : monitor.loopInfoLog)
-    {
-        LOG(INFO) << "[Loop]";
-        LOG(INFO) << "loop: " << it.first;
-
-        for (const auto& [jt, kt] : it.second)
-        {
-            LOG(INFO) << "    [Buffer]";
-            LOG(INFO) << "    ln: " << jt.lines_index << "  fl: " << jt.file_name <<
-                "  Buffer type: " << bufferTypeToString(BufferType(jt.type));
-
-            LOG(INFO) << "        [Accesses]";
-            for (auto& lt : kt)
-            {
-                LOG(INFO) << "        ln: " << lt.lines_index << "  fl: " << lt.file_name <<
-                    "  Access type: " << stmtTypeToString(StmtType(lt.type));
-            }
-        }
-        LOG(INFO) << "[Loop END]";
-    }
-
 }
 
 /*!
