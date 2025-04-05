@@ -47,22 +47,22 @@ namespace SVF
 {
     enum BufferType : int
     {
-        SEND_BUFFER = 0,
+        UNKNOWN_BUFFER = 0,
+        SEND_BUFFER,
         RECV_BUFFER,
         SEND_AND_RECV_BUFFER,
-        UNKNOWN_BUFFER
     };
 
     enum StmtType : int
     {
-        LOAD_STMT = 0,
+        UNKNOWN_STMT = 0,
+        LOAD_STMT,
         STORE_STMT,
         LOAD_AND_STORE_STMT,
         CALL_STMT,
         CIRCULATION_END_STMT,
         UNSAFE_BRANCH_STMT,
-        RETURN_STMT,
-        UNKNOWN_STMT
+        RETURN_STMT
     };
 
 
@@ -123,6 +123,8 @@ namespace SVF
             int lines_index;
             std::string file_name;
             int type;
+            unsigned long long allIRSum;
+            std::multiset<unsigned long long>* pathIRSum;
 
             bool operator<(const MonitorLogData &x2) const {
                 if (lines_index != x2.lines_index) {
@@ -134,11 +136,12 @@ namespace SVF
 
             // for test.
             MonitorLogData():
-                lines_index(0), file_name("null"), type(UNKNOWN_BUFFER)
+                lines_index(0), file_name("null"), type(UNKNOWN_BUFFER), allIRSum(0), pathIRSum(nullptr)
             {}
 
-            MonitorLogData(int lines, std::string &fl_name, int type):
-                lines_index(lines), file_name(fl_name), type(type)
+            MonitorLogData(int lines, std::string &fl_name, int type, unsigned long long sum,
+                           std::multiset<unsigned long long>* pathIRSum):
+                lines_index(lines), file_name(fl_name), type(type), allIRSum(sum), pathIRSum(pathIRSum)
             {}
         };
 
@@ -152,8 +155,27 @@ namespace SVF
         //     UNKNOWN_LOOP
         // };
 
-        // final result. <buffer, unsafe_stmt>
-        std::map<Buffer*, std::set<std::pair<const SVFStmt*, StmtType>>> bufferAccess;
+        struct IRStmtSumInfo
+        {
+            StmtType type;
+            unsigned long long allIRSum;
+            std::multiset<unsigned long long> pathIRSum;
+
+            explicit IRStmtSumInfo(StmtType type = UNKNOWN_STMT, unsigned long long sum = 0):
+                type(type), allIRSum(sum)
+            {}
+
+            // Currently, only accept allIRSum
+            void insertPathInfo(unsigned long long sum)
+            {
+                allIRSum = sum;
+            }
+        };
+
+        std::map<const ICFGNode*, unsigned long long> functionsIRSum;
+
+        // final result. <buffer, <unsafe_stmt, {IRStmtSumInfo}>>
+        std::map<Buffer*, std::map<const SVFStmt*, IRStmtSumInfo>> bufferAccess;
 
         // final log.
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
@@ -181,7 +203,9 @@ namespace SVF
 
         void parseRecord(std::string call, std::string access,
                          BufferType buf_type = UNKNOWN_BUFFER,
-                         StmtType stmt_type = UNKNOWN_STMT
+                         StmtType stmt_type = UNKNOWN_STMT,
+                         unsigned long long IRStmtsSum = 0,
+                         std::multiset<unsigned long long>* pathIRStmtSum = nullptr
         );
     };
 
@@ -204,10 +228,16 @@ public:
 
     // add by zsz
     // input CallNode, return RetNode. if no CallSite, return nullptr.
-    const ICFGNode* findFuncRetNode(const ICFGNode* callNode);
+    static const ICFGNode* findFuncRetNode(const ICFGNode* callNode);
+    static const ICFGNode* findFuncCallNode(const ICFGNode* retNode);
+    static constexpr unsigned long long getIRStmtSum(const ICFGNode* node);
+
     // DFS.
     void findICFGLoops(const ICFGNode* startNode, Monitor& monitor);
     void findICFGBuffers(const ICFGNode* startNode, Monitor& monitor);
+
+    // void calculateIRStmtSum(Monitor& monitor);
+    void calculateIRStmtsSumV2(const ICFGNode* globalNode, Monitor& monitor);
     // Ignore goto. Keep searching until return to entry or find back.
     // void traverseICFGLoopVer1(const ICFGNode* startNode, Monitor& monitor);
 

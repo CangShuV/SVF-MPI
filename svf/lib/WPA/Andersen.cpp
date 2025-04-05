@@ -34,6 +34,7 @@
 #include "WPA/Andersen.h"
 
 #include <queue>
+#include <utility>
 
 #include "WPA/Steensgaard.h"
 #include <glog/logging.h>
@@ -132,15 +133,16 @@ std::pair<int, std::string> Monitor::parse(std::string inst_info)
     return make_pair(instLnValue, instFlValue);
 }
 
-void Monitor::parseRecord(std::string call, std::string access, SVF::BufferType buf_type, SVF::StmtType stmt_type)
+void Monitor::parseRecord(std::string call, std::string access, BufferType buf_type, StmtType stmt_type,
+                          unsigned long long IRStmtsSum, std::multiset<unsigned long long>* pathIRStmtSum)
 {
-    auto[callLnValue, callFlValue] = parse(call);
-    auto[accessLnValue, accessFlValue] = parse(access);
+    auto[callLnValue, callFlValue] = parse(std::move(call));
+    auto[accessLnValue, accessFlValue] = parse(std::move(access));
 
     if(accessLnValue > 0  && callLnValue > 0)
     {
-        MonitorLogData callLog = {callLnValue, callFlValue, static_cast<int>(buf_type)};
-        MonitorLogData accessLog = {accessLnValue, accessFlValue, static_cast<int>(stmt_type)};
+        MonitorLogData callLog = {callLnValue, callFlValue, static_cast<int>(buf_type), 0, nullptr};
+        MonitorLogData accessLog = {accessLnValue, accessFlValue, static_cast<int>(stmt_type), IRStmtsSum, pathIRStmtSum};
         log[callLog].insert(accessLog);
         // stmtLog.insert(accessLog);
     }
@@ -231,10 +233,328 @@ void AndersenBase::solveConstraints()
     DBOUT(DGENERAL, outs() << SVFUtil::pasMsg("Finish Solving Constraints\n"));
 }
 
-// void AndersenBase::traverseICFGLoopVer2(const ICFGNode* startNode, Monitor& monitor)
+const ICFGNode* AndersenBase::findFuncRetNode(const ICFGNode* call_node)
+{
+    auto *callNode = dyn_cast<CallICFGNode>(call_node);
+    if (!callNode)
+    {
+        // LOG(FATAL) << "[findFuncRetNode] " << callNode << " is not CallNode!!";
+        return nullptr;
+    }
+
+    const auto retNode = callNode->getRetICFGNode();
+    return retNode;
+}
+
+const ICFGNode* AndersenBase::findFuncCallNode(const ICFGNode* ret_node)
+{
+    auto *retNode = dyn_cast<RetICFGNode>(ret_node);
+    if (!retNode)
+    {
+        // LOG(FATAL) << "[findFuncCallNode] " << retNode << " is not RetNode!!";
+        return nullptr;
+    }
+
+    const auto callNode = retNode->getCallICFGNode();
+    return callNode;
+}
+
+constexpr unsigned long long AndersenBase::getIRStmtSum(const ICFGNode* node)
+{
+    return node->getSVFStmts().size();
+}
+
+void AndersenBase::calculateIRStmtsSumV2(const ICFGNode* globalNode, Monitor& monitor)
+{
+    unordered_set<const ICFGNode*> bufferNodeVisited;
+    unordered_set<const ICFGNode*> accessNodeVisited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+
+    // calculate functions IRStmtSum.
+    auto &visited = bufferNodeVisited;
+    stack.push(globalNode);
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        if (visited.find(currentNode) != visited.end())
+            continue; // 已经访问过，跳过
+        visited.insert(currentNode);
+
+        if (auto *funEntryNode = dyn_cast<FunEntryICFGNode>(currentNode))
+        {
+            auto &visited2 = accessNodeVisited;
+            visited2.clear();
+
+            std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack2;
+            stack2.push(currentNode);
+
+            while (!stack2.empty())
+            {
+                const ICFGNode* currentNode2 = stack2.top();
+                stack2.pop();
+
+                if (visited2.find(currentNode2) != visited2.end())
+                    continue; // 已经访问过，跳过
+                visited2.insert(currentNode2);
+
+                if (!dyn_cast<FunExitICFGNode>(currentNode2))
+                    for (auto edge : currentNode2->getOutEdges())
+                    {
+                        ICFGNode* nextNode = edge->getDstNode();
+                        stack2.push(nextNode);
+                    }
+            }
+
+            for (auto it: visited2)
+            {
+                monitor.functionsIRSum[currentNode] += getIRStmtSum(it);
+            }
+            LOG(INFO) << "[functionsIRSum] currentNode: " << currentNode->getId() << "  " << monitor.functionsIRSum[currentNode];
+        }
+
+        for (auto edge : currentNode->getOutEdges())
+        {
+            ICFGNode* nextNode = edge->getDstNode();
+            stack.push(nextNode);
+        }
+    }
+
+
+    for (auto& buf : monitor.buffers)
+    {
+        bufferNodeVisited.clear();
+        while (!stack.empty()) stack.pop();
+
+        stack.push(buf.node);
+
+        // [1st dfs] calculate buffer's reachable nodes
+        while (!stack.empty())
+        {
+            const ICFGNode* currentNode = stack.top();
+            stack.pop();
+
+            if (bufferNodeVisited.find(currentNode) != bufferNodeVisited.end())
+                continue; // 已经访问过，跳过
+            bufferNodeVisited.insert(currentNode);
+
+            // LOG(INFO) << "[PATH]" << currentNode->toString();
+
+            // if searched accessNodes, stop.
+            for (auto &it : currentNode->getSVFStmts())
+            {
+                if (monitor.bufferAccess[&buf].find(it) != monitor.bufferAccess[&buf].end())
+                    goto nextLoop;
+            }
+
+            if (!findFuncRetNode(currentNode))
+            {
+                for (auto edge : currentNode->getOutEdges())
+                {
+                    ICFGNode* nextNode = edge->getDstNode();
+                    stack.push(nextNode);
+                }
+            }
+            // jump functions.
+            else
+            {
+                auto retNode = findFuncRetNode(currentNode);
+                stack.push(retNode);
+            }
+
+            nextLoop:;
+        }
+
+        LOG(INFO) << "[buffer] " << buf.node->getId();
+        for (auto canReachedNode: bufferNodeVisited)
+        {
+            LOG(INFO) << canReachedNode->getId();
+        }
+
+        // [2nd dfs] calculate buffer's access's inversion reachable nodes
+        for (auto& it: monitor.bufferAccess[&buf])
+        {
+            auto accessStmt = it.first;
+            auto startNode = accessStmt->getICFGNode();
+            accessNodeVisited.clear();
+
+            while (!stack.empty()) stack.pop();
+            stack.push(startNode);
+            if (!findFuncCallNode(startNode))
+            {
+                for (auto edge : startNode->getInEdges())
+                {
+                    ICFGNode* nextNode = edge->getSrcNode();
+                    stack.push(nextNode);
+                }
+            }
+            // jump functions.
+            else
+            {
+                auto callNode = findFuncCallNode(startNode);
+                stack.push(callNode);
+            }
+
+            while (!stack.empty())
+            {
+                const ICFGNode* currentNode = stack.top();
+                stack.pop();
+
+                if (accessNodeVisited.find(currentNode) != accessNodeVisited.end())
+                    continue; // 已经访问过，跳过
+                accessNodeVisited.insert(currentNode);
+
+                // LOG(INFO) << "[PATH]" << currentNode->toString();
+
+                // if searched accessNodes or bufferNodes, stop.
+                if (currentNode == buf.node)
+                    goto nextLoop2nd;
+                for (auto &currentNodeStmt : currentNode->getSVFStmts())
+                {
+                    for (auto &buffer: monitor.buffers)
+                    {
+                        if (monitor.bufferAccess[&buffer].find(currentNodeStmt) != monitor.bufferAccess[&buffer].end())
+                            goto nextLoop2nd;
+                    }
+                }
+
+                if (!findFuncCallNode(currentNode))
+                {
+                    for (auto edge : currentNode->getInEdges())
+                    {
+                        ICFGNode* nextNode = edge->getSrcNode();
+                        stack.push(nextNode);
+                    }
+                }
+                // jump functions.
+                else
+                {
+                    auto callNode = findFuncCallNode(currentNode);
+                    stack.push(callNode);
+                }
+
+                nextLoop2nd:;
+            }
+
+            // calculate.
+            unsigned long long sum = 0;
+            for (auto canReachedNode: bufferNodeVisited)
+            {
+                if (accessNodeVisited.find(canReachedNode) != accessNodeVisited.end())
+                {
+                    sum += getIRStmtSum(canReachedNode);
+                    if (dyn_cast<CallICFGNode>(canReachedNode))
+                    {
+                        assert(canReachedNode->getOutEdges().size() == 1);
+                        for (auto edge : canReachedNode->getOutEdges())
+                            sum += monitor.functionsIRSum[edge->getDstNode()];
+                    }
+                }
+            }
+
+            LOG(INFO) << "[Access] " << accessStmt->getICFGNode()->getId();
+            for (auto sth: accessNodeVisited)
+                LOG(INFO) << sth->getId();
+
+            monitor.bufferAccess[&buf][accessStmt].insertPathInfo(sum);
+        }
+    }
+}
+
+// void AndersenBase::calculateIRStmtSum(Monitor& monitor)
 // {
+//     unordered_map<int, std::unordered_set<const ICFGNode*>> visited;
 //
+//     struct State {
+//         const ICFGNode* currentNode;
+//         unsigned long long accumulatedSum;
+//         int visitedId;
+//         const ICFGNode* retNode;
+//
+//         State(const ICFGNode* node, unsigned long long sum, int visitedId, const ICFGNode* retNode):
+//             currentNode(node), accumulatedSum(sum), visitedId(visitedId), retNode(retNode)
+//         {}
+//     };
+//
+//     // <hashCode, vid>
+//     unordered_map<int, int> visitedHashCode;
+//
+//     for (auto& buf : monitor.buffers)
+//     {
+//         LOG(INFO) << "[calculateIRStmtSum, buffer] " << &buf;
+//
+//         visited.clear();
+//         int vidCounter = 1;
+//         long long hashConflictCounter = 0;
+//
+//         std::stack<State, std::vector<State>> stack;
+//         stack.emplace(buf.node, 0 ,0, nullptr);
+//
+//         while (!stack.empty()) {
+//             auto [currentNode, currentSum, vid, retNode] = stack.top();
+//             stack.pop();
+//
+//             LOG(INFO) << "[calculateIRStmtSum] " << currentNode->getId() << " , vid: " << vid;
+//
+//             if (visited[vid].find(currentNode) != visited[vid].end())
+//             {
+//                 // TODO: 处理环. method: abandon visited, using visited_hash.
+//                 continue;
+//             }
+//             visited[vid].insert(currentNode);
+//
+//             unsigned long long newSum = currentSum + getIRStmtSum(currentNode);
+//             std::vector<State> pushList;
+//
+//             // if currentNode is access point:
+//             for (auto stmt: currentNode->getSVFStmts())
+//             {
+//                 if (monitor.bufferAccess[&buf].find(stmt) != monitor.bufferAccess[&buf].end())
+//                 {
+//                     monitor.bufferAccess[&buf][stmt].insertPathInfo(newSum);
+//                     goto nextLoop;
+//                 }
+//             }
+//
+//             // 遍历所有出边，分裂新的状态
+//             for (const auto& edge : currentNode->getOutEdges()) {
+//                 ICFGNode* nextNode = edge->getDstNode();
+//                 // 仅处理未在当前路径访问过的节点
+//                 if (visited[vid].find(nextNode) == visited[vid].end())
+//                 {
+//                     // if (!retNode)
+//                     //     stack.emplace(nextNode, newSum, vidCounter++, findFuncRetNode(nextNode));
+//                     // else if (retNode == nextNode)
+//                     // {
+//                     stack.emplace(nextNode, newSum, vidCounter++, nullptr);
+//                     //     break;
+//                     // }
+//                 }
+//             }
+//
+//             // recycle one vid.
+//             if (!pushList.empty())
+//             {
+//                 auto [nextNode, newSum, newVId, retNode] = pushList.back();
+//                 stack.emplace(nextNode, newSum, vid, retNode);
+//                 pushList.pop_back();
+//                 --vidCounter;
+//             }
+//
+//             for (auto it : pushList)
+//             {
+//                 stack.push(it);
+//                 // copy a new copy.
+//                 visited[it.visitedId] = visited[vid];
+//             }
+//
+//             nextLoop:;
+//         }
+//     }
 // }
+
 
 int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buffer& buf)
 {
@@ -252,7 +572,7 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
         auto& [back, entry, type] = backNodeSearch;
         if (type == RETURN_STMT || type == UNSAFE_BRANCH_STMT)
         {
-            monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), type});
+            monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(type);
             return -1;
         }
 
@@ -264,7 +584,7 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
             // LOG(INFO) << buf.loopEntryNode;
             if (belongLoopBackNode == node)
             {
-                monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), CIRCULATION_END_STMT});
+                monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(CIRCULATION_END_STMT);
                 return -2;
             }
 
@@ -288,7 +608,7 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
                     // LOG(INFO) << "trigger!";
                     // LOG(INFO) <<buf.callInst->getSourceLoc();
                     // LOG(INFO) <<loadStmt->getInst()->getSourceLoc();
-                    monitor.bufferAccess[&buf].insert({stmt, LOAD_STMT});
+                    monitor.bufferAccess[&buf][stmt] = Monitor::IRStmtSumInfo(LOAD_STMT);
                 }
             }
             else if (auto* storeStmt = dyn_cast<StoreStmt>(stmt))
@@ -302,7 +622,7 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
 
                     // 查询最内层循环
                     // const SVFLoop* loop = getInnermostSVFLoop(intraNode);
-                    monitor.bufferAccess[&buf].insert({stmt, STORE_STMT});
+                    monitor.bufferAccess[&buf][stmt] = Monitor::IRStmtSumInfo(STORE_STMT);
                 }
             }
         }
@@ -338,7 +658,7 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
                 //         // LOG(INFO) << "trigger!";
                 //         // LOG(INFO) << i.buf->getSourceLoc();
                 //         // LOG(INFO) << callinst->getSourceLoc();
-                monitor.bufferAccess[&buf].insert({node->getSVFStmts().back(), stmtType});
+                monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(stmtType);
             }
 
             return 2;
@@ -402,39 +722,6 @@ void AndersenBase::detectBufferNodes(const ICFGNode* node, Monitor& monitor)
             LOG(INFO) << "trigger!";
         }
     }
-}
-
-const ICFGNode* AndersenBase::findFuncRetNode(const ICFGNode* call_node)
-{
-    auto *callNode = dyn_cast<CallICFGNode>(call_node);
-    if (!callNode)
-    {
-        // LOG(FATAL) << "[findFuncRetNode] " << callNode << " is not CallNode!!";
-        return nullptr;
-    }
-
-    auto retNode = callNode->getRetICFGNode();
-    return retNode;
-
-    // auto* callInst = callNode->getCallSite();
-    // auto callSite = getSVFCallSite(callInst);
-    //
-    // if (!callInst)
-    //     return nullptr;
-    //
-    // // 目标函数的退出节点
-    // const FunExitICFGNode *exitNode = icfg->getFunExitICFGNode(callNode->getFun());
-    //
-    // // 返回位置（RetICFGNode）
-    // for (const auto& edge : exitNode->getOutEdges())
-    // {
-    //     auto* retNode = dyn_cast<RetICFGNode>(edge->getDstNode());
-    //     if (getSVFCallSite(retNode->getCallSite()) == callSite)
-    //     {
-    //         return retNode;
-    //     }
-    // }
-    // return nullptr;
 }
 
 void AndersenBase::findICFGLoops(const ICFGNode* globalNode, Monitor& monitor)
@@ -917,11 +1204,14 @@ void AndersenBase::ptsMatch()
 
     traverseICFG(monitor);
 
-    for (auto [buf, stmtSet] : monitor.bufferAccess)
+    // calculateIRStmtSum(monitor);
+    calculateIRStmtsSumV2(node, monitor);
+
+    for (auto& [buf, stmtMap] : monitor.bufferAccess)
     {
-        for (auto [stmt, stmtType] : stmtSet)
+        for (auto& [stmt, IRStmtSumInfo] : stmtMap)
             monitor.parseRecord(buf->callInst->getSourceLoc(), stmt->getInst()->getSourceLoc(),
-                                buf->type, stmtType);
+                                buf->type, IRStmtSumInfo.type, IRStmtSumInfo.allIRSum, &IRStmtSumInfo.pathIRSum);
     }
 
     /*
@@ -934,13 +1224,19 @@ void AndersenBase::ptsMatch()
     for(const auto& [bufLog, stmtLogSet] : monitor.log)
     {
         LOG(INFO) << "[Buffer]";
-        LOG(INFO) << "ln: " << bufLog.lines_index << "  fl: " << bufLog.file_name <<
-                     "  Buffer type: " << bufferTypeToString(BufferType(bufLog.type));
+        LOG(INFO) << "ln: " << bufLog.lines_index << ", fl: " << bufLog.file_name <<
+                     ", Buffer type: " << bufferTypeToString(BufferType(bufLog.type));
         LOG(INFO) << "    [Accesses]";
         for (const auto& stmtLog : stmtLogSet)
         {
-            LOG(INFO) << "    ln: " << stmtLog.lines_index << "  fl: " << stmtLog.file_name <<
-                         "  Access type: " << stmtTypeToString(StmtType(stmtLog.type));
+            LOG(INFO) << "    ln: " << stmtLog.lines_index << ", fl: " << stmtLog.file_name
+                      << ", Access type: " << stmtTypeToString(StmtType(stmtLog.type)) << ", Sum: " << stmtLog.allIRSum;
+            LOG(INFO) << "      [Paths]";
+            int pathSumId = 0;
+            for (auto pathSum: *stmtLog.pathIRSum)
+            {
+                LOG(INFO) << "      " << pathSumId++ << ": " << pathSum;
+            }
         }
     }
 }
