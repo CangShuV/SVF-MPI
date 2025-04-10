@@ -47,10 +47,10 @@ namespace SVF
 {
     enum BufferType : int
     {
-        UNKNOWN_BUFFER = 0,
-        SEND_BUFFER,
-        RECV_BUFFER,
-        SEND_AND_RECV_BUFFER,
+        UNKNOWN_BUFFER = 0, // unsafe: ALL
+        SEND_BUFFER, // unsafe: STORE
+        RECV_BUFFER, // unsafe: LOAD
+        SEND_AND_RECV_BUFFER, // unsafe: LOAD & STORE
     };
 
     enum StmtType : int
@@ -62,6 +62,7 @@ namespace SVF
         CALL_STMT,
         CIRCULATION_END_STMT,
         UNSAFE_BRANCH_STMT,
+        BREAK_STMT,
         RETURN_STMT
     };
 
@@ -89,6 +90,7 @@ namespace SVF
         case CIRCULATION_END_STMT: return "Circulation End";
         case UNSAFE_BRANCH_STMT: return "Unsafe Branch";
         case RETURN_STMT: return "Return";
+        case BREAK_STMT: return "Break";
         case UNKNOWN_STMT: return "Unknown";
         default: return "Invalid";
         }
@@ -134,7 +136,7 @@ namespace SVF
                 }
             }
 
-            // for test.
+            /// for test.
             MonitorLogData():
                 lines_index(0), file_name("null"), type(UNKNOWN_BUFFER), allIRSum(0), pathIRSum(nullptr)
             {}
@@ -165,7 +167,7 @@ namespace SVF
                 type(type), allIRSum(sum)
             {}
 
-            // Currently, only accept allIRSum
+            /// Currently, only accept allIRSum
             void insertPathInfo(unsigned long long sum)
             {
                 allIRSum = sum;
@@ -174,29 +176,27 @@ namespace SVF
 
         std::map<const ICFGNode*, unsigned long long> functionsIRSum;
 
-        // final result. <buffer, <unsafe_stmt, {IRStmtSumInfo}>>
+        /// final result. <buffer, <unsafe_stmt, {IRStmtSumInfo}>>
         std::map<Buffer*, std::map<const SVFStmt*, IRStmtSumInfo>> bufferAccess;
 
-        // final log.
+        /// final log. <[buffer], {accesses}>
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
 
         // <entry, back>
-        std::set<std::tuple<const ICFGNode*, const ICFGNode*>> loops;
+        // std::map<const ICFGNode*, std::set<const ICFGNode*>> loops;
+        // /// inv of loops, included goto & return nodes. <back, entry, type>
+        // std::set<std::tuple<const ICFGNode*, const ICFGNode*, StmtType>> backEdges;
+        // /// [node], loopEntryNode. If node doesn't in loop, will filled by nullptr.
+        // std::map<const ICFGNode*, std::set<const ICFGNode*>> nodeBelongLoop;
 
-        // inv of loops, included goto & return nodes. <back, entry, type>
-        std::set<std::tuple<const ICFGNode*, const ICFGNode*, StmtType>> backEdges;
+        // /// <entry>, return key. if not find, return nullptr
+        // const ICFGNode* findNodeInLoops(const ICFGNode* entryNode,
+        //            const ICFGNode* backNode = nullptr);
 
-
-        // [node], <loopEntryNode, loopBackNode>. If node doesn't in loop, will filled by nullptr.
-        std::map<const ICFGNode*, std::tuple<const ICFGNode*, const ICFGNode*>> nodeBelongLoop;
-
-
-        // <entry, back>. if not find, return {}
-        std::tuple<const ICFGNode*, const ICFGNode*> findNodeInLoops(const ICFGNode* node);
-
-        // inv of loops, included goto & return nodes. <back, entry, type>. if not find, return {}
-        std::tuple<const ICFGNode*, const ICFGNode*, StmtType>  findNodeInBackEdges(const ICFGNode* node);
-        // // 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, <bufferLog, {accessLogs}>>;
+        // /// inv of loops, included goto & return nodes. <back, entry, type>. if not find, return {}
+        // std::tuple<const ICFGNode*, const ICFGNode*, StmtType>  findNodeInBackEdges(const ICFGNode* entryNode,
+        //            const ICFGNode* backNode = nullptr, StmtType type = static_cast<StmtType>(0));
+        // /// 记录 SVFLoop* 中有哪些语句, 包括循环体末尾; <Loop, <bufferLog, {accessLogs}>>;
         // std::map<const SVFLoop*, std::map<MonitorLogData, std::set<MonitorLogData>>> loopInfoLog;
 
         static std::pair<int, std::string> parse(std::string inst_info);
@@ -227,21 +227,23 @@ public:
     void ptsMatch();
 
     // add by zsz
-    // input CallNode, return RetNode. if no CallSite, return nullptr.
+    /// input CallNode, return RetNode. if no CallSite, return nullptr.
     static const ICFGNode* findFuncRetNode(const ICFGNode* callNode);
     static const ICFGNode* findFuncCallNode(const ICFGNode* retNode);
     static constexpr unsigned long long getIRStmtSum(const ICFGNode* node);
 
-    // DFS.
-    void findICFGLoops(const ICFGNode* startNode, Monitor& monitor);
+    // /// DFS.
+    // void findICFGLoops(const ICFGNode* startNode, Monitor& monitor);
+    /// Just for test.
+    static void testICFGLoops();
     void findICFGBuffers(const ICFGNode* startNode, Monitor& monitor);
 
-    // void calculateIRStmtSum(Monitor& monitor);
+    /// void calculateIRStmtSum(Monitor& monitor);
     void calculateIRStmtsSumV2(const ICFGNode* globalNode, Monitor& monitor);
-    // Ignore goto. Keep searching until return to entry or find back.
+    /// Ignore goto. Keep searching until return to entry or find back.
     // void traverseICFGLoopVer1(const ICFGNode* startNode, Monitor& monitor);
 
-    // Keep searching until return to entryNode or find backNode/goto/return.
+    /// Keep searching until return to entryNode or find backNode/goto/return.
     // void traverseICFGLoopVer2(const ICFGNode* startNode, Monitor& monitor);
 
     void detectBufferNodes(const ICFGNode* node, Monitor& monitor);
@@ -252,6 +254,12 @@ public:
         "MPI_Scatter", "MPI_Gather",   "MPI_Allgather", "MPI_Alltoall",
         "MPI_Reduce",  "MPI_Allreduce"
     };
+
+    // void cleanupBufferAccess(Monitor& monitor);
+
+    // const ICFGNode* findNodeInLoops();
+    // std::tuple<const ICFGNode*, const ICFGNode*, StmtType>  findNodeInBackEdges();
+
 
     /// Constructor
     AndersenBase(SVFIR* _pag, PTATY type = Andersen_BASE, bool alias_check = true)

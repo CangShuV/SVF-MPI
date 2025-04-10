@@ -64,10 +64,15 @@ int main(int argc, char** argv)
         /// Build SVFIR
         SVFIRBuilder builder(svfModule);
         pag = builder.build();
+        // if (Options::LoopAnalysis())
+        // {
+        //     LOG(FATAL) << "TRIGGER!";
+        // }
 
     }
     LOG(INFO) << "start logging";
     WPAPass wpa;
+
     wpa.runOnModule(pag);
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;
