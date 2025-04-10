@@ -1,1 +1,1 @@
-clang -O0 -g -emit-llvm -fno-discard-value-names -c test.c -o test.bc
+clang -O0 -g -emit-llvm -fno-discard-value-names -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -flto=auto -Wl,-z,relro -I/usr/include/x86_64-linux-gnu/mpich -L/usr/lib/x86_64-linux-gnu -lmpich -O0 -g -emit-llvm -c test.c -o dt.bc

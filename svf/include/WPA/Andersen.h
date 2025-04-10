@@ -51,6 +51,7 @@ namespace SVF
         SEND_BUFFER, // unsafe: STORE
         RECV_BUFFER, // unsafe: LOAD
         SEND_AND_RECV_BUFFER, // unsafe: LOAD & STORE
+        INVALID_BUFFER,
     };
 
     enum StmtType : int
@@ -63,7 +64,8 @@ namespace SVF
         CIRCULATION_END_STMT,
         UNSAFE_BRANCH_STMT,
         BREAK_STMT,
-        RETURN_STMT
+        RETURN_STMT,
+        INVALID_STMT
     };
 
 
@@ -138,7 +140,7 @@ namespace SVF
 
             /// for test.
             MonitorLogData():
-                lines_index(0), file_name("null"), type(UNKNOWN_BUFFER), allIRSum(0), pathIRSum(nullptr)
+                lines_index(0), file_name("null"), type(INVALID_BUFFER), allIRSum(0), pathIRSum(nullptr)
             {}
 
             MonitorLogData(int lines, std::string &fl_name, int type, unsigned long long sum,
@@ -163,7 +165,7 @@ namespace SVF
             unsigned long long allIRSum;
             std::multiset<unsigned long long> pathIRSum;
 
-            explicit IRStmtSumInfo(StmtType type = UNKNOWN_STMT, unsigned long long sum = 0):
+            explicit IRStmtSumInfo(StmtType type = INVALID_STMT, unsigned long long sum = 0):
                 type(type), allIRSum(sum)
             {}
 
@@ -202,8 +204,8 @@ namespace SVF
         static std::pair<int, std::string> parse(std::string inst_info);
 
         void parseRecord(std::string call, std::string access,
-                         BufferType buf_type = UNKNOWN_BUFFER,
-                         StmtType stmt_type = UNKNOWN_STMT,
+                         BufferType buf_type = INVALID_BUFFER,
+                         StmtType stmt_type = INVALID_STMT,
                          unsigned long long IRStmtsSum = 0,
                          std::multiset<unsigned long long>* pathIRStmtSum = nullptr
         );
@@ -221,8 +223,6 @@ class AndersenBase:  public WPAConstraintSolver, public BVDataPTAImpl
 public:
 
     // add by bz
-    // void processNode(const ICFGNode* node, Monitor& monitor);
-    // Search loops, then do BFS.
     void traverseICFG(Monitor& monitor);
     void ptsMatch();
 
@@ -248,6 +248,8 @@ public:
 
     void detectBufferNodes(const ICFGNode* node, Monitor& monitor);
     int detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buffer& buf);
+
+    // void AndersenBase::processFuncNodes(const ICFGNode* node);
 
     const std::set<std::string> specialFunctions = {
         "foo",         "MPI_Send",     "MPI_Recv",      "MPI_Bcast",
