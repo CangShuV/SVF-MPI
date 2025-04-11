@@ -305,16 +305,16 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
         /// 检查是否是 MPI 相关函数
         if (specialFunctions.count(callSite.getCalledFunction()->getName()))
         {
+            /// buf.node != node: omit itself.
+            if (buf.node == node)
+                return 2;
+
             StmtType stmtType;
             auto &calledFunctionName = callSite.getCalledFunction()->getName();
             if (calledFunctionName == "MPI_Send") {
-                // if (buf.type == SEND_BUFFER)
-                //     return 0;
 
                 stmtType = LOAD_STMT;
             } else if (calledFunctionName == "MPI_Recv") {
-                // if (buf.type == RECV_BUFFER)
-                //     return 0;
 
                 stmtType = STORE_STMT;
             } else if (calledFunctionName == "MPI_Bcast") {
@@ -323,10 +323,10 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
                 stmtType = UNKNOWN_STMT;
             }
 
+            // TODO: 目前只检查了Arg0。应当检查所有参数。（将其对buffer的影响视作自定义函数）
             auto bufArg0 = callSite.getArgument(0); // 获取第一个缓冲区参数
 
-            // buf.node != node: omit itself.
-            if (buf.node != node && alias(buf.buf, bufArg0))
+            if (alias(buf.buf, bufArg0))
             {
                 //         // LOG(INFO) << "trigger!";
                 //         // LOG(INFO) << i.buf->getSourceLoc();
@@ -462,7 +462,6 @@ void AndersenBase::findICFGBuffers(const ICFGNode* globalNode, Monitor& monitor)
             stack.push(nextNode);
         }
     }
-
 }
 
 void AndersenBase::traverseICFG(Monitor& monitor)
@@ -490,6 +489,7 @@ void AndersenBase::traverseICFG(Monitor& monitor)
                 LOG(INFO) << (*backEdge)->getDstNode()->getId();
                 monitor.bufferAccess[&buf][(*backEdge)->getSrcNode()->getSVFStmts().back()] = Monitor::IRStmtSumInfo(
                     CIRCULATION_END_STMT);
+                monitor.loopInfo.insert((*backEdge)->getSrcNode());
             }
             for (auto outEdge = loop->outICFGEdgesBegin(); outEdge != loop->outICFGEdgesEnd(); ++outEdge)
             {
@@ -502,6 +502,7 @@ void AndersenBase::traverseICFG(Monitor& monitor)
                 LOG(INFO) << "[Trigger! Break recorded.]";
                 monitor.bufferAccess[&buf][(*outEdge)->getSrcNode()->getSVFStmts().back()] = Monitor::IRStmtSumInfo(
                     BREAK_STMT);
+                monitor.loopInfo.insert((*outEdge)->getSrcNode());
             // nextLoop:;
             }
         }
@@ -578,6 +579,150 @@ void AndersenBase::traverseICFG(Monitor& monitor)
             }
         }
     }
+}
+
+void AndersenBase::queryIRStmtsSumInit(const ICFGNode* globalNode, Monitor& monitor)
+{
+    std::unordered_set<const ICFGNode*> visited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+
+    for (auto edge : globalNode->getOutEdges())
+        stack.push(edge->getDstNode());
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        if (visited.find(currentNode) != visited.end())
+        {
+            // LOG(WARNING) << "[traverseICFG] Repeated access node!\n" << currentNode->toString();
+            continue; /// 已经访问过，跳过
+        }
+        visited.insert(currentNode);
+
+        // LOG(INFO) << "[PATH]" << currentNode->toString();
+        monitor.locToNode[Monitor::parse(currentNode->toString())].insert(currentNode);
+
+        /// 遍历所有出边
+        for (auto edge : currentNode->getOutEdges())
+            stack.push(edge->getDstNode());
+    }
+}
+
+/// input two lines ID, return possible MaxIRStmtsSum.
+unsigned long long AndersenBase::queryIRStmtsSum(int srcLine, int dstLine, std::string& srcFileName, std::string& dstFileName,
+                                   Monitor& monitor)
+{
+    unordered_set<const ICFGNode*> srcNodeVisited;
+    unordered_set<const ICFGNode*> dstNodeVisited;
+    std::stack<const ICFGNode*, std::vector<const ICFGNode*>> stack;
+
+    // [1st dfs] calculate srcNodeSet's reachable nodes
+    for (auto it : monitor.locToNode[{srcLine, srcFileName}])
+    {
+        stack.push(it);
+    }
+
+    // LOG(INFO) << stack.size();
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        if (srcNodeVisited.find(currentNode) != srcNodeVisited.end())
+            continue; // 已经访问过，跳过
+        srcNodeVisited.insert(currentNode);
+
+        // LOG(INFO) << "[PATH]" << srcLine << ": " << currentNode->getId();
+
+        // if searched UnsafeNodes, stop, but record.
+        if (monitor.loopInfo.find(currentNode) != monitor.loopInfo.end())
+            continue;
+
+        if (!findFuncRetNode(currentNode))
+        {
+            for (auto edge : currentNode->getOutEdges())
+            {
+                ICFGNode* nextNode = edge->getDstNode();
+                stack.push(nextNode);
+            }
+        }
+        // jump functions.
+        else
+        {
+            auto retNode = findFuncRetNode(currentNode);
+            stack.push(retNode);
+        }
+    }
+
+    // [2nd dfs] calculate dstNodeSet's inversion reachable nodes
+    while (!stack.empty()) stack.pop();
+
+    for (auto it : monitor.locToNode[{dstLine, dstFileName}])
+    {
+        // LOG(INFO) << it->getId();
+        stack.push(it);
+    }
+
+    while (!stack.empty())
+    {
+        const ICFGNode* currentNode = stack.top();
+        stack.pop();
+
+        // if searched UnsafeNodes, stop.
+        if (monitor.loopInfo.find(currentNode) != monitor.loopInfo.end())
+            continue;
+
+        /// record.
+        if (dstNodeVisited.find(currentNode) != dstNodeVisited.end())
+            continue; // 已经访问过，跳过
+        dstNodeVisited.insert(currentNode);
+
+        // LOG(INFO) << "[PATH]" << dstLine << ": " << currentNode->getId();
+
+        // /// if searched bufferNodes, stop.
+        // if (currentNode == buf.node)
+        //     goto nextLoop2nd;
+
+        if (!findFuncCallNode(currentNode))
+        {
+            for (auto edge : currentNode->getInEdges())
+            {
+                ICFGNode* nextNode = edge->getSrcNode();
+                stack.push(nextNode);
+            }
+        }
+        // jump functions.
+        else
+        {
+            auto callNode = findFuncCallNode(currentNode);
+            stack.push(callNode);
+        }
+    }
+
+    // calculate.
+    unsigned long long sum = 0;
+    for (auto canReachedNode : srcNodeVisited)
+    {
+        if (dstNodeVisited.find(canReachedNode) != dstNodeVisited.end())
+        {
+            sum += getIRStmtSum(canReachedNode);
+            if (dyn_cast<CallICFGNode>(canReachedNode))
+            {
+                assert(canReachedNode->getOutEdges().size() == 1);
+                for (auto edge : canReachedNode->getOutEdges())
+                    sum += monitor.functionsIRSum[edge->getDstNode()];
+            }
+        }
+    }
+
+    // LOG(INFO) << "[Access] " << accessStmt->getICFGNode()->getId();
+    // for (auto sth: accessNodeVisited)
+    //     LOG(INFO) << sth->getId();
+
+    return sum;
 }
 
 void AndersenBase::calculateIRStmtsSumV2(const ICFGNode* globalNode, Monitor& monitor)
@@ -798,6 +943,15 @@ void AndersenBase::ptsMatch()
 
     // calculateIRStmtSum(monitor);
     calculateIRStmtsSumV2(node, monitor);
+
+    // LOG(FATAL) << "stop.";
+    queryIRStmtsSumInit(node, monitor);
+
+    // ***** need query at there ***** //
+    std::string querySrcFileName = "dt.c";
+    LOG(INFO) << queryIRStmtsSum(719, 723, querySrcFileName, querySrcFileName, monitor);
+    LOG(INFO) << queryIRStmtsSum(664, 684, querySrcFileName, querySrcFileName, monitor);
+    LOG(INFO) << queryIRStmtsSum(714, 725, querySrcFileName, querySrcFileName, monitor);
 
     for (auto& [buf, stmtMap] : monitor.bufferAccess)
     {

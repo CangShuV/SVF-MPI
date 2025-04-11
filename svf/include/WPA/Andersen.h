@@ -184,6 +184,12 @@ namespace SVF
         /// final log. <[buffer], {accesses}>
         std::map<MonitorLogData, std::set<MonitorLogData>> log;
 
+        /// [<lines, file_name>], {Nodes}
+        std::map<std::pair<int, std::string>, std::set<const ICFGNode*>> locToNode;
+
+        /// include loop's entry, out Node. (Unsafe Nodes).
+        std::set<const ICFGNode*> loopInfo;
+
         // <entry, back>
         // std::map<const ICFGNode*, std::set<const ICFGNode*>> loops;
         // /// inv of loops, included goto & return nodes. <back, entry, type>
@@ -248,6 +254,9 @@ public:
 
     void detectBufferNodes(const ICFGNode* node, Monitor& monitor);
     int detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buffer& buf);
+
+    static void queryIRStmtsSumInit(const ICFGNode* globalNode, Monitor& monitor);
+    unsigned long long queryIRStmtsSum(int srcLine, int dstLine, std::string& srcFileName, std::string& dstFileName, Monitor& monitor);
 
     // void AndersenBase::processFuncNodes(const ICFGNode* node);
 
