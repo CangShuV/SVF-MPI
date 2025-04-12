@@ -6,21 +6,21 @@ include ../config/make.def
 
 include ../sys/make.common
 #Override PROGRAM
-DTPROGRAM  = $(BINDIR)/$(BENCHMARK).$(CLASS).x
+DTPROGRAM  = test.bc
 
-OBJS = dt.o DGraph.o \
+OBJS = dt.bc DGraph.bc \
 	${COMMON}/c_print_results.o ${COMMON}/c_timers.o ${COMMON}/c_randdp.o
 
-
 ${PROGRAM}: config ${OBJS}
-	${CLINK} ${CLINKFLAGS} -o ${DTPROGRAM} ${OBJS} ${CMPI_LIB}
+	llvm-link dt.bc DGraph.bc -o ${DTPROGRAM}
 
-.c.o:
-	${CCOMPILE} $<
+# 生成.bc文件的规则
+%.bc: %.c
+	$(CLANG_BC) -emit-llvm -c $(CFLAGS) $(CMPI_INC) $(CONVERTFLAG) $< -o $@
 
-dt.o:             dt.c  npbparams.h
-DGraph.o:	DGraph.c DGraph.h
+dt.bc:             dt.c  npbparams.h
+DGraph.bc:	DGraph.c DGraph.h
 
 clean:
-	- rm -f *.o *~ mputil*
+	- rm -f *.o *.bc *~ mputil*
 	- rm -f dt npbparams.h core

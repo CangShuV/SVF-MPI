@@ -82,12 +82,16 @@ CLINK	= $(MPICC)
 #---------------------------------------------------------------------------
 # These macros are passed to the linker to help link with MPI correctly
 #---------------------------------------------------------------------------
-CMPI_LIB =
+# 获取 MPI 库路径
+MPI_LIB := $(shell mpicc --showme:link 2>/dev/null || mpicc -show 2>/dev/null | head -1 | sed 's/.*-L\([^ ]*\).*/\1/')
+CMPI_LIB = $(if $(MPI_LIB),-L$(MPI_LIB)) -lmpi
 
 #---------------------------------------------------------------------------
 # These macros are passed to the compiler to help find 'mpi.h'
 #---------------------------------------------------------------------------
-CMPI_INC =
+# 获取 MPI 包含路径
+MPI_INC := $(shell mpicc --showme:compile 2>/dev/null || mpicc -show 2>/dev/null | head -1 | sed 's/.*-I\([^ ]*\).*/\1/')
+CMPI_INC = $(if $(MPI_INC),-I$(MPI_INC))
 
 #---------------------------------------------------------------------------
 # Global *compile time* flags for C programs
@@ -95,10 +99,13 @@ CMPI_INC =
 CFLAGS	= -O3
 
 #---------------------------------------------------------------------------
-# Global *link time* flags. Flags for increasing maximum executable 
-# size usually go here. 
+# Global *link time* flags. Flags for increasing maximum executable
+# size usually go here.
 #---------------------------------------------------------------------------
 CLINKFLAGS = $(CFLAGS)
+
+# 添加 -emit-llvm 支持
+CLANG_BC = clang -O0 -g -fno-discard-value-names -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -flto=auto -Wl,-z,relro -I/usr/include/x86_64-linux-gnu/mpich -L/usr/lib/x86_64-linux-gnu -lmpich
 
 
 #---------------------------------------------------------------------------
