@@ -334,6 +334,21 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
                 monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(stmtType);
             }
 
+            for(u32_t i = 1; i < callSite.arg_size(); ++i) {
+                const SVFValue* arg = callSite.getArgOperand(i);
+                const SVFType* argType = arg->getType();
+
+                // LOG(INFO) << node->getId() << ": type: " << *argType;
+
+                if (buf.node != node && alias(buf.buf, arg))
+                {
+                    if (argType->isPointerTy())
+                        monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(LOAD_AND_STORE_STMT);
+                    else
+                        monitor.bufferAccess[&buf][node->getSVFStmts().back()] = Monitor::IRStmtSumInfo(LOAD_STMT);
+                }
+            }
+
             return 2;
         }
         else
@@ -342,7 +357,12 @@ int AndersenBase::detectAccessNodes(const ICFGNode* node, Monitor& monitor, Buff
                 const SVFValue* arg = callSite.getArgOperand(i);
                 const SVFType* argType = arg->getType();
 
-                LOG(INFO) << node->getId() << ": type: " << *argType;
+                // if (!node->getSVFStmts().empty())
+                // {
+                //     LOG(INFO) << node->getSVFStmts().back()->getInst()->getSourceLoc() << "\ntype: " << *argType;
+                //     LOG(INFO) << *buf.buf;
+                //     LOG(INFO) << *arg;
+                // }
 
                 if (buf.node != node && alias(buf.buf, arg))
                 {
@@ -388,10 +408,11 @@ void AndersenBase::detectBufferNodes(const ICFGNode* node, Monitor& monitor)
                 bufferType = UNKNOWN_BUFFER;
             }
 
+            LOG(INFO) << callInst->getSourceLoc() << *buf;
             /// 创建一个新的缓冲区并添加到 monitor
             Buffer buffer(callInst, buf, node, bufferType);
             monitor.buffers.push_back(buffer);
-            LOG(INFO) << "trigger!";
+            // LOG(INFO) << "trigger!";
         }
     }
 }
@@ -474,32 +495,35 @@ void AndersenBase::traverseICFG(Monitor& monitor)
     {
         if (SVFLoopMap.find(buf.node) != SVFLoopMap.end())
         {
-            LOG(INFO) << "buf.node: " << buf.node->getId() << " LoopsSize: " << SVFLoopMap[buf.node].size();
-            for (auto jt : SVFLoopMap[buf.node])
-            {
-                auto loop = const_cast<SVFLoop*>(jt);
-                for (auto sth = loop->entryICFGEdgesBegin(); sth != loop->entryICFGEdgesEnd(); ++sth)
-                    LOG(INFO) << (*sth)->getDstNode()->getId();
-            }
+            // LOG(INFO) << "buf.node: " << buf.node->getId() << " LoopsSize: " << SVFLoopMap[buf.node].size();
+            // for (auto jt : SVFLoopMap[buf.node])
+            // {
+            //     auto loop = const_cast<SVFLoop*>(jt);
+            //     for (auto sth = loop->entryICFGEdgesBegin(); sth != loop->entryICFGEdgesEnd(); ++sth)
+            //     {
+            //         LOG(INFO) << (*sth)->getDstNode()->getId();
+            //     }
+            // }
+
             /// getInnerMostLoop.
             auto loop = const_cast<SVFLoop*>(SVFLoopMap[buf.node].back());
             for (auto backEdge = loop->backICFGEdgesBegin(); backEdge != loop->backICFGEdgesEnd(); ++backEdge)
             {
-                LOG(INFO) << (*backEdge)->getSrcNode()->getId();
-                LOG(INFO) << (*backEdge)->getDstNode()->getId();
+                // LOG(INFO) << (*backEdge)->getSrcNode()->getId();
+                // LOG(INFO) << (*backEdge)->getDstNode()->getId();
                 monitor.bufferAccess[&buf][(*backEdge)->getSrcNode()->getSVFStmts().back()] = Monitor::IRStmtSumInfo(
                     CIRCULATION_END_STMT);
                 monitor.loopInfo.insert((*backEdge)->getSrcNode());
             }
             for (auto outEdge = loop->outICFGEdgesBegin(); outEdge != loop->outICFGEdgesEnd(); ++outEdge)
             {
-                LOG(INFO) << (*outEdge)->getSrcNode()->getId();
-                LOG(INFO) << (*outEdge)->getDstNode()->getId();
+                // LOG(INFO) << (*outEdge)->getSrcNode()->getId();
+                // LOG(INFO) << (*outEdge)->getDstNode()->getId();
                 /// if it is not simple br stmt's Node.
                 if ((*outEdge)->getSrcNode()->getOutEdges().size() != 1)
                     continue;
 
-                LOG(INFO) << "[Trigger! Break recorded.]";
+                // LOG(INFO) << "[Trigger! Break recorded.]";
                 monitor.bufferAccess[&buf][(*outEdge)->getSrcNode()->getSVFStmts().back()] = Monitor::IRStmtSumInfo(
                     BREAK_STMT);
                 monitor.loopInfo.insert((*outEdge)->getSrcNode());
@@ -520,7 +544,7 @@ void AndersenBase::traverseICFG(Monitor& monitor)
             stack.push(nextNode);
         }
 
-        LOG(INFO) << "[TEST] " << stack.size();
+        // LOG(INFO) << "[TEST] " << stack.size();
 
         while (!stack.empty())
         {
@@ -538,9 +562,9 @@ void AndersenBase::traverseICFG(Monitor& monitor)
 
             int processResult = -1;
 
-            /// 处理当前节点
-            /// Do not search for special function nodes.
-            if (!specialFunctions.count(currentNode->getFun()->getName()))
+            // /// 处理当前节点
+            // /// Do not search for special function nodes.
+            // if (!specialFunctions.count(currentNode->getFun()->getName()))
                 processResult = detectAccessNodes(currentNode, monitor, buf);
 
             /// 遍历所有出边
@@ -773,7 +797,7 @@ void AndersenBase::calculateIRStmtsSumV2(const ICFGNode* globalNode, Monitor& mo
             {
                 monitor.functionsIRSum[currentNode] += getIRStmtSum(it);
             }
-            LOG(INFO) << "[functionsIRSum] currentNode: " << currentNode->getId() << "  " << monitor.functionsIRSum[currentNode];
+            // LOG(INFO) << "[functionsIRSum] currentNode: " << currentNode->getId() << "  " << monitor.functionsIRSum[currentNode];
         }
 
         for (auto edge : currentNode->getOutEdges())
@@ -940,6 +964,7 @@ void AndersenBase::ptsMatch()
 
     traverseICFG(monitor);
     // monitor.cleanupLog();
+    // LOG(FATAL) << "stop.";
 
     // calculateIRStmtSum(monitor);
     calculateIRStmtsSumV2(node, monitor);

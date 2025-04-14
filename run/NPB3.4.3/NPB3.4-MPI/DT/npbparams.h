@@ -7,7 +7,7 @@
 #define NUM_SAMPLES 110592
 #define STD_DEVIATION 512
 #define NUM_SOURCES 16
-#define COMPILETIME "12 Apr 2025"
+#define COMPILETIME "14 Apr 2025"
 #define NPBVERSION "3.4.3"
 #define MPICC "mpicc"
 #define CFLAGS "-O3"
