@@ -963,34 +963,56 @@ void AndersenBase::ptsMatch()
     findICFGBuffers(node, monitor);
 
     traverseICFG(monitor);
+
+    for (auto& [buf, stmtMap] : monitor.bufferAccess)
+    {
+        stmtMap.erase(nullptr);
+    }
     // monitor.cleanupLog();
     // LOG(FATAL) << "stop.";
 
-    // calculateIRStmtSum(monitor);
-    calculateIRStmtsSumV2(node, monitor);
+    // ***** if MLE, disable this parameter ***** //
+    const bool calculateIRStmtSum = true;
 
-    // LOG(FATAL) << "stop.";
-    queryIRStmtsSumInit(node, monitor);
+    if (calculateIRStmtSum)
+    {
+        // calculateIRStmtSum(monitor);
+        calculateIRStmtsSumV2(node, monitor);
 
-    // ***** need query at there ***** //
-    std::string querySrcFileName = "dt.c";
-    LOG(INFO) << queryIRStmtsSum(719, 723, querySrcFileName, querySrcFileName, monitor);
-    LOG(INFO) << queryIRStmtsSum(664, 684, querySrcFileName, querySrcFileName, monitor);
-    LOG(INFO) << queryIRStmtsSum(714, 725, querySrcFileName, querySrcFileName, monitor);
+        // LOG(FATAL) << "stop.";
+        queryIRStmtsSumInit(node, monitor);
+
+        // ***** need query at there ***** //
+        std::string querySrcFileName = "dt.c";
+        LOG(INFO) << queryIRStmtsSum(719, 723, querySrcFileName, querySrcFileName, monitor);
+        LOG(INFO) << queryIRStmtsSum(664, 684, querySrcFileName, querySrcFileName, monitor);
+        LOG(INFO) << queryIRStmtsSum(714, 725, querySrcFileName, querySrcFileName, monitor);
+    }
 
     for (auto& [buf, stmtMap] : monitor.bufferAccess)
     {
         for (auto& [stmt, IRStmtSumInfo] : stmtMap)
         {
-            /// erase Accesses which impossible to reach.
-            if (IRStmtSumInfo.allIRSum == 0)
+            LOG(INFO) << buf->callInst->getSourceLoc();
+            LOG(INFO) << stmt->getInst()->getSourceLoc();
+
+            if (!calculateIRStmtSum)
             {
-                LOG(INFO) << "\n[impossible to reach access]\n" << "buffer: " << buf->node->getId() << "  access: " <<
-                    stmt->getICFGNode()->getId() << "  access type: " << stmtTypeToString(IRStmtSumInfo.type);
-            }
-            else
                 monitor.parseRecord(buf->callInst->getSourceLoc(), stmt->getInst()->getSourceLoc(),
                                     buf->type, IRStmtSumInfo.type, IRStmtSumInfo.allIRSum, &IRStmtSumInfo.pathIRSum);
+            }
+            else
+            {
+                /// erase Accesses which impossible to reach.
+                if (IRStmtSumInfo.allIRSum == 0)
+                {
+                    LOG(INFO) << "\n[impossible to reach access]\n" << "buffer: " << buf->node->getId() << "  access: " <<
+                        stmt->getICFGNode()->getId() << "  access type: " << stmtTypeToString(IRStmtSumInfo.type);
+                }
+                else
+                    monitor.parseRecord(buf->callInst->getSourceLoc(), stmt->getInst()->getSourceLoc(),
+                                        buf->type, IRStmtSumInfo.type, IRStmtSumInfo.allIRSum, &IRStmtSumInfo.pathIRSum);
+            }
         }
 
     }
